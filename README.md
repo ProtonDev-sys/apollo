@@ -60,9 +60,19 @@ Spotify support is metadata-only. It is optional.
 
 If you want Spotify search:
 
-- create a Spotify developer app
-- copy the client ID and client secret
-- paste them into Apollo UI config or the shared config file
+1. Go to `https://developer.spotify.com/dashboard`
+2. Sign in with your Spotify account
+3. Click `Create app`
+4. Give the app a name and description, then create it
+5. Open the app you just created in the Spotify Developer Dashboard
+6. Copy the `Client ID`
+7. Click `View client secret`, then copy the `Client Secret`
+8. Paste both values into Apollo in either:
+
+- the Electron UI config screen
+- the shared config file at `C:\Users\<you>\AppData\Roaming\apollo\config.json`
+
+If you edit the config file directly, set the Spotify fields there and restart Apollo so the new credentials are loaded.
 
 ### 5. Shared config location
 
