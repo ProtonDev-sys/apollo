@@ -3,7 +3,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 
 function createDefaultSettings(musicRoot) {
-  const serverRoot = path.join(musicRoot, 'Music Server');
+  const serverRoot = path.join(musicRoot, 'Apollo');
   return {
     ytDlpPath: 'yt-dlp',
     ffmpegPath: 'ffmpeg',

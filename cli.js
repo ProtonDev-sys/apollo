@@ -11,7 +11,7 @@ function getDefaultMusicRoot() {
 }
 
 function printUsage() {
-  console.log(`Apollo server CLI
+  console.log(`Apollo CLI
 
 Usage:
   node cli.js start
