@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Apollo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="section">
+        <div class="section-head">
+          <h2>Status</h2>
+          <span id="server-badge" class="status-pill warn">Starting</span>
+        </div>
+        <div class="stack">
+          <p id="status-banner" class="muted">
+            Loading server state and dependency checks.
+          </p>
+          <div class="row">
+            <span class="label">API base URL</span>
+            <code id="server-url">Waiting for server...</code>
+          </div>
+          <div class="stats">
+            <article class="stat">
+              <span class="label">Tracks</span>
+              <strong id="stat-tracks">0</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Playlists</span>
+              <strong id="stat-playlists">0</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Jobs</span>
+              <strong id="stat-downloads">0</strong>
+            </article>
+            <article class="stat">
+              <span class="label">Completed</span>
+              <strong id="stat-complete">0</strong>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Config</h2>
+          <div class="actions">
+            <button id="open-library-folder" class="button button-ghost">Open Library</button>
+            <button id="save-settings" class="button button-primary">Save</button>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Host</span>
+            <input id="serverHost" type="text" />
+          </label>
+          <label class="field">
+            <span>Port</span>
+            <input id="serverPort" type="text" />
+          </label>
+          <label class="field full-width">
+            <span>Library directory</span>
+            <div class="inline-field">
+              <input id="libraryDirectory" type="text" />
+              <button data-pick="libraryDirectory" class="button button-ghost pick-dir">Browse</button>
+            </div>
+          </label>
+          <label class="field full-width">
+            <span>Incoming downloads directory</span>
+            <div class="inline-field">
+              <input id="incomingDirectory" type="text" />
+              <button data-pick="incomingDirectory" class="button button-ghost pick-dir">Browse</button>
+            </div>
+          </label>
+          <label class="field">
+            <span>`yt-dlp` path</span>
+            <input id="ytDlpPath" type="text" />
+          </label>
+          <label class="field">
+            <span>`ffmpeg` path</span>
+            <input id="ffmpegPath" type="text" />
+          </label>
+          <label class="field">
+            <span>Spotify client ID</span>
+            <input id="spotifyClientId" type="text" />
+          </label>
+          <label class="field">
+            <span>Spotify client secret</span>
+            <input id="spotifyClientSecret" type="password" />
+          </label>
+        </div>
+
+        <div class="actions top-gap">
+          <button id="rescan-library" class="button button-ghost">Rescan Library</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Dependencies</h2>
+        </div>
+        <div id="dependency-grid" class="simple-list"></div>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

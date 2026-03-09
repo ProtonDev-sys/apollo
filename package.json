@@ -1,0 +1,28 @@
+{
+  "name": "apollo",
+  "version": "0.1.0",
+  "description": "Apollo music server with Electron config UI, headless CLI, downloads, playlists, and a local HTTP API.",
+  "main": "main.js",
+  "bin": {
+    "apollo": "./cli.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "start:ui": "electron .",
+    "start:cli": "node cli.js start",
+    "config:path": "node cli.js config-path",
+    "config:print": "node cli.js print-config"
+  },
+  "keywords": [
+    "apollo",
+    "music-server",
+    "electron",
+    "cli",
+    "yt-dlp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^37.0.0"
+  }
+}
