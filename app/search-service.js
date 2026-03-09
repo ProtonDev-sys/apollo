@@ -1,5 +1,27 @@
 const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
+const { createHttpError } = require('./http-error');
+const { createEmptyProviderIds, formatApiTrack } = require('./models');
+
+const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud'];
+
+function parseProviderSelection(input) {
+  const rawProviders = String(input || 'all')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!rawProviders.length || rawProviders.includes('all')) {
+    return ['spotify', 'youtube'];
+  }
+
+  const unknownProviders = rawProviders.filter((provider) => !SEARCH_PROVIDER_ORDER.includes(provider));
+  if (unknownProviders.length) {
+    throw createHttpError(400, `Unknown providers: ${unknownProviders.join(', ')}`);
+  }
+
+  return [...new Set(rawProviders)];
+}
 
 async function fetchSpotifyToken(settings) {
   const credentials = Buffer.from(
@@ -34,7 +56,11 @@ function formatSpotifyTrack(item) {
     duration: item.duration_ms ? Math.round(item.duration_ms / 1000) : null,
     artwork: item.album?.images?.[1]?.url || item.album?.images?.[0]?.url || '',
     externalUrl: item.external_urls?.spotify || '',
-    downloadTarget: `ytsearch1:${item.artists.map((artist) => artist.name).join(' ')} ${item.name} audio`
+    downloadTarget: `ytsearch1:${item.artists.map((artist) => artist.name).join(' ')} ${item.name} audio`,
+    providerIds: createEmptyProviderIds({
+      spotify: item.id,
+      isrc: item.external_ids?.isrc || ''
+    })
   };
 }
 
@@ -90,7 +116,10 @@ function formatYtDlpEntry(entry, provider) {
     duration: entry.duration || null,
     artwork: entry.thumbnails?.[0]?.url || '',
     externalUrl: resolvedUrl,
-    downloadTarget: resolvedUrl
+    downloadTarget: resolvedUrl,
+    providerIds: createEmptyProviderIds({
+      [provider]: entry.id || ''
+    })
   };
 }
 
@@ -128,39 +157,35 @@ async function searchProviders({ query, provider = 'all', page = 1, pageSize = 8
       total: 0,
       page: 1,
       pageSize,
-      totalPages: 1
+      totalPages: 1,
+      provider: parseProviderSelection(provider),
+      warning: ''
     };
   }
 
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
+  const providers = parseProviderSelection(provider);
+  const results = await Promise.allSettled(
+    providers.map((selectedProvider) => {
+      if (selectedProvider === 'spotify') {
+        return searchSpotify(trimmedQuery, safePage, safePageSize, settings);
+      }
 
-  if (provider === 'spotify') {
-    return searchSpotify(trimmedQuery, safePage, safePageSize, settings);
-  }
-
-  if (provider === 'youtube' || provider === 'soundcloud') {
-    return searchViaYtDlp(trimmedQuery, provider, safePage, safePageSize, settings);
-  }
-
-  const [spotify, youtube] = await Promise.allSettled([
-    searchSpotify(trimmedQuery, safePage, safePageSize, settings),
-    searchViaYtDlp(trimmedQuery, 'youtube', safePage, safePageSize, settings)
-  ]);
+      return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings);
+    })
+  );
 
   const items = [];
   const warnings = [];
 
-  if (spotify.status === 'fulfilled') {
-    items.push(...spotify.value.items);
-  } else {
-    warnings.push(spotify.reason.message);
-  }
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      items.push(...result.value.items);
+      continue;
+    }
 
-  if (youtube.status === 'fulfilled') {
-    items.push(...youtube.value.items);
-  } else {
-    warnings.push(youtube.reason.message);
+    warnings.push(result.reason.message);
   }
 
   return {
@@ -169,6 +194,7 @@ async function searchProviders({ query, provider = 'all', page = 1, pageSize = 8
     page: safePage,
     pageSize: safePageSize,
     totalPages: Math.max(1, Math.ceil(items.length / safePageSize)),
+    provider: providers,
     warning: warnings.join(' ')
   };
 }
@@ -199,24 +225,12 @@ async function inspectDirectLink(url, settings) {
     duration: payload.duration || null,
     artwork: payload.thumbnail || payload.thumbnails?.[0]?.url || '',
     externalUrl: payload.webpage_url || trimmedUrl,
-    downloadTarget: trimmedUrl
-  };
-}
-
-function formatLibraryTrack(track, baseUrl) {
-  return {
-    id: track.id,
-    provider: 'library',
-    source: 'library',
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
-    duration: track.duration,
-    artwork: '',
-    externalUrl: `${baseUrl}/stream/${track.id}`,
-    downloadTarget: `${baseUrl}/stream/${track.id}?download=1`,
-    trackId: track.id,
-    fileName: track.fileName
+    downloadTarget: trimmedUrl,
+    providerIds: createEmptyProviderIds({
+      youtube: payload.extractor_key?.toLowerCase() === 'youtube' ? payload.id || '' : '',
+      soundcloud: payload.extractor_key?.toLowerCase() === 'soundcloud' ? payload.id || '' : '',
+      isrc: payload.track_id || payload.isrc || ''
+    })
   };
 }
 
@@ -225,7 +239,7 @@ async function searchCatalog(payload, settings, store, baseUrl) {
   const page = Math.max(1, Number.parseInt(payload.page, 10) || 1);
   const pageSize = Math.min(20, Math.max(1, Number.parseInt(payload.pageSize, 10) || 8));
   const scope = payload.scope || 'all';
-  const provider = payload.provider || 'all';
+  const providers = parseProviderSelection(payload.provider || 'all');
 
   const library =
     scope === 'remote'
@@ -240,7 +254,7 @@ async function searchCatalog(payload, settings, store, baseUrl) {
           const result = store.listTracks({ query, page, pageSize });
           return {
             ...result,
-            items: result.items.map((track) => formatLibraryTrack(track, baseUrl))
+            items: result.items.map((track) => formatApiTrack(track, baseUrl))
           };
         })();
 
@@ -254,11 +268,11 @@ async function searchCatalog(payload, settings, store, baseUrl) {
           totalPages: 1,
           warning: ''
         }
-      : await searchProviders({ query, provider, page, pageSize }, settings);
+      : await searchProviders({ query, provider: providers, page, pageSize }, settings);
 
   return {
     query,
-    provider,
+    provider: providers,
     scope,
     library,
     remote
@@ -352,6 +366,7 @@ async function resolveClientDownload(input, settings, store, baseUrl) {
 }
 
 module.exports = {
+  parseProviderSelection,
   searchProviders,
   inspectDirectLink,
   searchCatalog,

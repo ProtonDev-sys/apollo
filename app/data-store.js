@@ -1,6 +1,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { createHttpError } = require('./http-error');
+const { normaliseProviderIds } = require('./models');
 
 function createDefaultSettings(musicRoot) {
   const serverRoot = path.join(musicRoot, 'Apollo');
@@ -85,8 +87,22 @@ class DataStore {
         ...this.defaultSettings,
         ...(nextState.settings || {})
       },
-      tracks: Array.isArray(nextState.tracks) ? nextState.tracks : [],
-      playlists: Array.isArray(nextState.playlists) ? nextState.playlists : [],
+      tracks: Array.isArray(nextState.tracks)
+        ? nextState.tracks.map((track) => ({
+            ...track,
+            artwork: track.artwork || '',
+            providerIds: normaliseProviderIds(track.providerIds)
+          }))
+        : [],
+      playlists: Array.isArray(nextState.playlists)
+        ? nextState.playlists.map((playlist) => ({
+            ...playlist,
+            description: playlist.description || '',
+            artworkUrl: playlist.artworkUrl || '',
+            artworkPath: playlist.artworkPath || '',
+            trackIds: Array.isArray(playlist.trackIds) ? playlist.trackIds : []
+          }))
+        : [],
       downloads: Array.isArray(nextState.downloads) ? nextState.downloads : []
     };
   }
@@ -196,17 +212,24 @@ class DataStore {
     const index = this.state.tracks.findIndex(
       (existing) => existing.id === track.id || existing.filePath === track.filePath
     );
+    const existingTrack = index >= 0 ? this.state.tracks[index] : null;
+    const hasProviderIds =
+      track.providerIds && Object.values(track.providerIds).some((value) => String(value || '').trim());
     const nextTrack = {
-      id: track.id || (index >= 0 ? this.state.tracks[index].id : randomUUID()),
+      id: track.id || (existingTrack ? existingTrack.id : randomUUID()),
       title: track.title || 'Unknown Title',
       artist: track.artist || 'Unknown Artist',
       album: track.album || 'Singles',
       duration: track.duration || null,
       provider: track.provider || 'library',
+      artwork: typeof track.artwork === 'string' ? track.artwork : existingTrack?.artwork || '',
+      providerIds: hasProviderIds
+        ? normaliseProviderIds(track.providerIds)
+        : normaliseProviderIds(existingTrack?.providerIds),
       sourceUrl: track.sourceUrl || '',
       filePath: track.filePath,
       fileName: path.basename(track.filePath),
-      addedAt: index >= 0 ? this.state.tracks[index].addedAt : new Date().toISOString(),
+      addedAt: existingTrack ? existingTrack.addedAt : new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
@@ -245,6 +268,10 @@ class DataStore {
     });
   }
 
+  getDownload(downloadId) {
+    return this.state.downloads.find((download) => download.id === downloadId) || null;
+  }
+
   async upsertDownload(download) {
     const index = this.state.downloads.findIndex((item) => item.id === download.id);
     if (index >= 0) {
@@ -281,13 +308,15 @@ class DataStore {
   async createPlaylist({ name, description = '' }) {
     const trimmedName = (name || '').trim();
     if (!trimmedName) {
-      throw new Error('Playlist name is required.');
+      throw createHttpError(400, 'Playlist name is required.');
     }
 
     const playlist = {
       id: randomUUID(),
       name: trimmedName,
       description: description.trim(),
+      artworkUrl: '',
+      artworkPath: '',
       trackIds: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -298,14 +327,65 @@ class DataStore {
     return this.getPlaylist(playlist.id);
   }
 
+  async updatePlaylist(playlistId, updates) {
+    const playlist = this.state.playlists.find((item) => item.id === playlistId);
+    if (!playlist) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'name')) {
+      const trimmedName = String(updates.name || '').trim();
+      if (!trimmedName) {
+        throw createHttpError(400, 'Playlist name cannot be empty.');
+      }
+      playlist.name = trimmedName;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'description')) {
+      playlist.description = String(updates.description || '').trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'artworkUrl')) {
+      const trimmedArtworkUrl = String(updates.artworkUrl || '').trim();
+      playlist.artworkUrl = trimmedArtworkUrl;
+      playlist.artworkPath = trimmedArtworkUrl ? '' : '';
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'artworkPath')) {
+      playlist.artworkPath = String(updates.artworkPath || '').trim();
+      if (playlist.artworkPath) {
+        playlist.artworkUrl = '';
+      }
+    }
+
+    playlist.updatedAt = new Date().toISOString();
+    await this.persist();
+    return this.getPlaylist(playlistId);
+  }
+
+  async deletePlaylist(playlistId) {
+    const index = this.state.playlists.findIndex((item) => item.id === playlistId);
+    if (index < 0) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    this.state.playlists.splice(index, 1);
+    await this.persist();
+
+    return {
+      ok: true,
+      id: playlistId
+    };
+  }
+
   async addTrackToPlaylist(playlistId, trackId) {
     const playlist = this.state.playlists.find((item) => item.id === playlistId);
     if (!playlist) {
-      throw new Error('Playlist not found.');
+      throw createHttpError(404, 'Playlist not found.');
     }
 
     if (!this.getTrack(trackId)) {
-      throw new Error('Track not found.');
+      throw createHttpError(404, 'Track not found.');
     }
 
     if (!playlist.trackIds.includes(trackId)) {
@@ -320,7 +400,7 @@ class DataStore {
   async removeTrackFromPlaylist(playlistId, trackId) {
     const playlist = this.state.playlists.find((item) => item.id === playlistId);
     if (!playlist) {
-      throw new Error('Playlist not found.');
+      throw createHttpError(404, 'Playlist not found.');
     }
 
     playlist.trackIds = playlist.trackIds.filter((item) => item !== trackId);

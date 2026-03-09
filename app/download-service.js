@@ -179,6 +179,8 @@ class DownloadService extends EventEmitter {
             album: item.album,
             duration: item.duration,
             provider: item.provider,
+            artwork: item.artwork || '',
+            providerIds: item.providerIds || {},
             sourceUrl: item.externalUrl || item.downloadTarget || ''
           },
           settings.libraryDirectory

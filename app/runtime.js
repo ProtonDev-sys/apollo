@@ -10,8 +10,26 @@ const {
   resolvePlayback,
   resolveClientDownload
 } = require('./search-service');
+const { createHttpError } = require('./http-error');
+const { formatApiTrack, formatApiPlaylist, resolvePlaylistArtworkUrl } = require('./models');
 const { DownloadService } = require('./download-service');
 const { createMusicServer } = require('./music-server');
+
+const PLAYLIST_ARTWORK_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+
+function getExtensionForMimeType(mimeType) {
+  switch (mimeType) {
+    case 'image/jpeg':
+    case 'image/jpg':
+      return '.jpg';
+    case 'image/png':
+      return '.png';
+    case 'image/webp':
+      return '.webp';
+    default:
+      return '';
+  }
+}
 
 async function createRuntime({
   baseDir,
@@ -34,12 +52,112 @@ async function createRuntime({
     store,
     libraryService
   });
+  const mediaDirectory = path.join(baseDir, 'media');
+  const playlistArtworkDirectory = path.join(mediaDirectory, 'playlists');
 
   let musicServer = null;
 
+  function getBaseUrl() {
+    return musicServer ? musicServer.getInfo().baseUrl : '';
+  }
+
+  function formatTrackList(result) {
+    return {
+      ...result,
+      items: result.items.map((track) => formatApiTrack(track, getBaseUrl())).filter(Boolean)
+    };
+  }
+
+  function formatPlaylist(playlist) {
+    return formatApiPlaylist(playlist, getBaseUrl());
+  }
+
+  async function removeFileIfPresent(targetPath) {
+    if (!targetPath) {
+      return;
+    }
+
+    await fs.rm(targetPath, { force: true });
+  }
+
+  async function updatePlaylist(playlistId, payload) {
+    const existing = store.getPlaylist(playlistId);
+    if (!existing) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'artworkUrl')) {
+      await removeFileIfPresent(existing.artworkPath);
+    }
+
+    return formatPlaylist(await store.updatePlaylist(playlistId, payload));
+  }
+
+  async function deletePlaylist(playlistId) {
+    const existing = store.getPlaylist(playlistId);
+    if (!existing) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    await removeFileIfPresent(existing.artworkPath);
+    return store.deletePlaylist(playlistId);
+  }
+
+  async function savePlaylistArtwork(playlistId, artwork) {
+    const playlist = store.getPlaylist(playlistId);
+    if (!playlist) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    const extension =
+      getExtensionForMimeType(artwork.contentType) ||
+      path.extname(artwork.fileName || '').toLowerCase();
+
+    if (!PLAYLIST_ARTWORK_EXTENSIONS.has(extension)) {
+      throw createHttpError(400, 'Unsupported artwork type. Use jpg, png, or webp.');
+    }
+
+    await fs.mkdir(playlistArtworkDirectory, { recursive: true });
+    const nextArtworkPath = path.join(playlistArtworkDirectory, `${playlistId}${extension}`);
+
+    if (playlist.artworkPath && playlist.artworkPath !== nextArtworkPath) {
+      await removeFileIfPresent(playlist.artworkPath);
+    }
+
+    await fs.writeFile(nextArtworkPath, artwork.buffer);
+    const updated = await store.updatePlaylist(playlistId, {
+      artworkPath: nextArtworkPath,
+      artworkUrl: ''
+    });
+
+    return {
+      id: updated.id,
+      artworkUrl: resolvePlaylistArtworkUrl(updated, getBaseUrl())
+    };
+  }
+
+  async function deletePlaylistArtwork(playlistId) {
+    const playlist = store.getPlaylist(playlistId);
+    if (!playlist) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    await removeFileIfPresent(playlist.artworkPath);
+    await store.updatePlaylist(playlistId, {
+      artworkPath: '',
+      artworkUrl: ''
+    });
+
+    return {
+      ok: true,
+      id: playlistId,
+      artworkUrl: ''
+    };
+  }
+
   musicServer = createMusicServer({
     getOverview: () => store.getOverview(),
-    listTracks: (payload) => store.listTracks(payload),
+    listTracks: (payload) => formatTrackList(store.listTracks(payload)),
     getTrack: (trackId) => store.getTrack(trackId),
     searchCatalog: (payload) =>
       searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
@@ -48,13 +166,22 @@ async function createRuntime({
     resolveClientDownload: (payload) =>
       resolveClientDownload(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
     inspectLink: (url) => inspectDirectLink(url, store.getSettings()),
-    listPlaylists: () => store.listPlaylists(),
-    createPlaylist: (payload) => store.createPlaylist(payload),
-    addTrackToPlaylist: (playlistId, trackId) => store.addTrackToPlaylist(playlistId, trackId),
-    removeTrackFromPlaylist: (playlistId, trackId) => store.removeTrackFromPlaylist(playlistId, trackId),
+    listPlaylists: () => store.listPlaylists().map((playlist) => formatPlaylist(playlist)),
+    getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
+    createPlaylist: async (payload) => formatPlaylist(await store.createPlaylist(payload)),
+    updatePlaylist,
+    deletePlaylist,
+    addTrackToPlaylist: async (playlistId, trackId) =>
+      formatPlaylist(await store.addTrackToPlaylist(playlistId, trackId)),
+    removeTrackFromPlaylist: async (playlistId, trackId) =>
+      formatPlaylist(await store.removeTrackFromPlaylist(playlistId, trackId)),
+    uploadPlaylistArtwork: savePlaylistArtwork,
+    deletePlaylistArtwork,
+    getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
     listDownloads: () => downloadService.getDownloads(),
+    getDownload: (downloadId) => store.getDownload(downloadId),
     queueDownload: (payload) => downloadService.queueDownload(payload),
-    rescanLibrary: () => libraryService.syncLibrary(store.getSettings().libraryDirectory)
+    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory))
   });
 
   downloadService.on('updated', (download) => {
@@ -65,6 +192,7 @@ async function createRuntime({
     const settings = store.getSettings();
     await fs.mkdir(settings.libraryDirectory, { recursive: true });
     await fs.mkdir(settings.incomingDirectory, { recursive: true });
+    await fs.mkdir(playlistArtworkDirectory, { recursive: true });
   }
 
   async function start() {
@@ -121,13 +249,21 @@ async function createRuntime({
     search: (payload) => searchProviders(payload, store.getSettings()),
     inspectLink: (url) => inspectDirectLink(url, store.getSettings()),
     queueDownload: (payload) => downloadService.queueDownload(payload),
-    listTracks: (payload) => store.listTracks(payload),
-    rescanLibrary: () => libraryService.syncLibrary(store.getSettings().libraryDirectory),
-    listPlaylists: () => ({ items: store.listPlaylists() }),
-    createPlaylist: (payload) => store.createPlaylist(payload),
-    addTrackToPlaylist: (payload) => store.addTrackToPlaylist(payload.playlistId, payload.trackId),
-    removeTrackFromPlaylist: (payload) =>
-      store.removeTrackFromPlaylist(payload.playlistId, payload.trackId),
+    listTracks: (payload) => formatTrackList(store.listTracks(payload)),
+    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory)),
+    listPlaylists: () => ({ items: store.listPlaylists().map((playlist) => formatPlaylist(playlist)) }),
+    getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
+    createPlaylist: async (payload) => formatPlaylist(await store.createPlaylist(payload)),
+    updatePlaylist,
+    deletePlaylist,
+    addTrackToPlaylist: async (payload) =>
+      formatPlaylist(await store.addTrackToPlaylist(payload.playlistId, payload.trackId)),
+    removeTrackFromPlaylist: async (payload) =>
+      formatPlaylist(await store.removeTrackFromPlaylist(payload.playlistId, payload.trackId)),
+    uploadPlaylistArtwork: ({ playlistId, artwork }) => savePlaylistArtwork(playlistId, artwork),
+    deletePlaylistArtwork,
+    getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
+    getDownload: (downloadId) => store.getDownload(downloadId),
     getServerInfo: () => musicServer.getInfo()
   };
 }

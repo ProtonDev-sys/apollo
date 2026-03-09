@@ -2,6 +2,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { URL } = require('url');
+const { createHttpError } = require('./http-error');
 
 const MIME_TYPES = {
   '.mp3': 'audio/mpeg',
@@ -10,7 +11,11 @@ const MIME_TYPES = {
   '.wav': 'audio/wav',
   '.aac': 'audio/aac',
   '.ogg': 'audio/ogg',
-  '.opus': 'audio/ogg'
+  '.opus': 'audio/ogg',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp'
 };
 
 function sendJson(response, statusCode, payload) {
@@ -18,35 +23,117 @@ function sendJson(response, statusCode, payload) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS'
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS'
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendNoContent(response) {
+  response.writeHead(204, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS'
+  });
+  response.end();
 }
 
 function notFound(response) {
   sendJson(response, 404, { error: 'Not found.' });
 }
 
-async function readBody(request) {
+async function readBufferBody(request) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
     request.on('data', (chunk) => {
-      body += chunk.toString();
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     request.on('end', () => {
-      if (!body) {
-        resolve({});
-        return;
-      }
-
-      try {
-        resolve(JSON.parse(body));
-      } catch (error) {
-        reject(new Error('Invalid JSON body.'));
-      }
+      resolve(chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0));
     });
     request.on('error', reject);
   });
+}
+
+async function readBody(request) {
+  const body = await readBufferBody(request);
+  if (!body.length) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch (error) {
+    throw createHttpError(400, 'Invalid JSON body.');
+  }
+}
+
+async function readMultipartArtwork(request) {
+  const contentType = request.headers['content-type'] || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!boundaryMatch) {
+    throw createHttpError(400, 'Missing multipart boundary.');
+  }
+
+  const boundary = boundaryMatch[1] || boundaryMatch[2];
+  const buffer = await readBufferBody(request);
+  const raw = buffer.toString('latin1');
+  const sections = raw.split(`--${boundary}`).slice(1, -1);
+
+  for (const section of sections) {
+    const trimmedSection = section.replace(/^\r\n/, '').replace(/\r\n$/, '');
+    const headerEnd = trimmedSection.indexOf('\r\n\r\n');
+    if (headerEnd < 0) {
+      continue;
+    }
+
+    const headerText = trimmedSection.slice(0, headerEnd);
+    const bodyText = trimmedSection.slice(headerEnd + 4);
+    const headerLines = headerText.split('\r\n');
+    const headers = Object.fromEntries(
+      headerLines.map((line) => {
+        const separatorIndex = line.indexOf(':');
+        return [
+          line.slice(0, separatorIndex).trim().toLowerCase(),
+          line.slice(separatorIndex + 1).trim()
+        ];
+      })
+    );
+
+    const disposition = headers['content-disposition'] || '';
+    const nameMatch = disposition.match(/name="?([^";]+)"?/i);
+    const fileNameMatch = disposition.match(/filename="?([^";]*)"?/i);
+
+    if (!nameMatch || nameMatch[1] !== 'artwork' || !fileNameMatch || !fileNameMatch[1]) {
+      continue;
+    }
+
+    return {
+      fieldName: nameMatch[1],
+      fileName: path.basename(fileNameMatch[1]),
+      contentType: headers['content-type'] || 'application/octet-stream',
+      buffer: Buffer.from(bodyText, 'latin1')
+    };
+  }
+
+  throw createHttpError(400, 'No artwork file was provided.');
+}
+
+function serveStaticFile(response, filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    notFound(response);
+    return;
+  }
+
+  const stat = fs.statSync(filePath);
+  const extension = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[extension] || 'application/octet-stream';
+
+  response.writeHead(200, {
+    'Access-Control-Allow-Origin': '*',
+    'Content-Type': contentType,
+    'Content-Length': stat.size
+  });
+  fs.createReadStream(filePath).pipe(response);
 }
 
 function streamTrack(request, response, track, requestUrl) {
@@ -108,7 +195,7 @@ function createMusicServer(services) {
 
   async function handleRequest(request, response) {
     if (request.method === 'OPTIONS') {
-      sendJson(response, 204, {});
+      sendNoContent(response);
       return;
     }
 
@@ -116,6 +203,12 @@ function createMusicServer(services) {
     const pathname = requestUrl.pathname;
 
     try {
+      const playlistArtworkMatch = pathname.match(/^\/media\/playlists\/([^/]+)$/);
+      if (request.method === 'GET' && playlistArtworkMatch) {
+        serveStaticFile(response, services.getPlaylistArtworkPath(decodeURIComponent(playlistArtworkMatch[1])));
+        return;
+      }
+
       if (request.method === 'GET' && pathname === '/api/health') {
         sendJson(response, 200, {
           status: 'ok',
@@ -126,22 +219,30 @@ function createMusicServer(services) {
       }
 
       if (request.method === 'GET' && pathname === '/api/tracks') {
-        sendJson(response, 200, services.listTracks({
-          query: requestUrl.searchParams.get('q') || '',
-          page: requestUrl.searchParams.get('page') || '1',
-          pageSize: requestUrl.searchParams.get('pageSize') || '20'
-        }));
+        sendJson(
+          response,
+          200,
+          services.listTracks({
+            query: requestUrl.searchParams.get('q') || '',
+            page: requestUrl.searchParams.get('page') || '1',
+            pageSize: requestUrl.searchParams.get('pageSize') || '20'
+          })
+        );
         return;
       }
 
       if (request.method === 'GET' && pathname === '/api/search') {
-        sendJson(response, 200, await services.searchCatalog({
-          query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || '',
-          provider: requestUrl.searchParams.get('provider') || 'all',
-          scope: requestUrl.searchParams.get('scope') || 'all',
-          page: requestUrl.searchParams.get('page') || '1',
-          pageSize: requestUrl.searchParams.get('pageSize') || '20'
-        }));
+        sendJson(
+          response,
+          200,
+          await services.searchCatalog({
+            query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || '',
+            provider: requestUrl.searchParams.get('provider') || 'all',
+            scope: requestUrl.searchParams.get('scope') || 'all',
+            page: requestUrl.searchParams.get('page') || '1',
+            pageSize: requestUrl.searchParams.get('pageSize') || '20'
+          })
+        );
         return;
       }
 
@@ -162,21 +263,68 @@ function createMusicServer(services) {
         return;
       }
 
-      const addTrackMatch = pathname.match(/^\/api\/playlists\/([^/]+)\/tracks$/);
-      if (request.method === 'POST' && addTrackMatch) {
-        const body = await readBody(request);
-        sendJson(response, 200, await services.addTrackToPlaylist(addTrackMatch[1], body.trackId));
+      const playlistArtworkRoute = pathname.match(/^\/api\/playlists\/([^/]+)\/artwork$/);
+      if (request.method === 'POST' && playlistArtworkRoute) {
+        const artwork = await readMultipartArtwork(request);
+        sendJson(response, 200, await services.uploadPlaylistArtwork(playlistArtworkRoute[1], artwork));
         return;
       }
 
-      const removeTrackMatch = pathname.match(/^\/api\/playlists\/([^/]+)\/tracks\/([^/]+)$/);
-      if (request.method === 'DELETE' && removeTrackMatch) {
-        sendJson(response, 200, await services.removeTrackFromPlaylist(removeTrackMatch[1], removeTrackMatch[2]));
+      if (request.method === 'DELETE' && playlistArtworkRoute) {
+        sendJson(response, 200, await services.deletePlaylistArtwork(playlistArtworkRoute[1]));
+        return;
+      }
+
+      const playlistTracksRoute = pathname.match(/^\/api\/playlists\/([^/]+)\/tracks$/);
+      if (request.method === 'POST' && playlistTracksRoute) {
+        const body = await readBody(request);
+        sendJson(response, 200, await services.addTrackToPlaylist(playlistTracksRoute[1], body.trackId));
+        return;
+      }
+
+      const playlistTrackRoute = pathname.match(/^\/api\/playlists\/([^/]+)\/tracks\/([^/]+)$/);
+      if (request.method === 'DELETE' && playlistTrackRoute) {
+        sendJson(response, 200, await services.removeTrackFromPlaylist(playlistTrackRoute[1], playlistTrackRoute[2]));
+        return;
+      }
+
+      const playlistRoute = pathname.match(/^\/api\/playlists\/([^/]+)$/);
+      if (request.method === 'GET' && playlistRoute) {
+        const playlist = services.getPlaylist(playlistRoute[1]);
+        if (!playlist) {
+          notFound(response);
+          return;
+        }
+
+        sendJson(response, 200, playlist);
+        return;
+      }
+
+      if (request.method === 'PATCH' && playlistRoute) {
+        const body = await readBody(request);
+        sendJson(response, 200, await services.updatePlaylist(playlistRoute[1], body));
+        return;
+      }
+
+      if (request.method === 'DELETE' && playlistRoute) {
+        sendJson(response, 200, await services.deletePlaylist(playlistRoute[1]));
         return;
       }
 
       if (request.method === 'GET' && pathname === '/api/downloads') {
         sendJson(response, 200, { items: services.listDownloads() });
+        return;
+      }
+
+      const downloadRoute = pathname.match(/^\/api\/downloads\/([^/]+)$/);
+      if (request.method === 'GET' && downloadRoute) {
+        const download = services.getDownload(downloadRoute[1]);
+        if (!download) {
+          notFound(response);
+          return;
+        }
+
+        sendJson(response, 200, download);
         return;
       }
 
@@ -211,7 +359,7 @@ function createMusicServer(services) {
 
       notFound(response);
     } catch (error) {
-      sendJson(response, 500, { error: error.message });
+      sendJson(response, error.statusCode || 500, { error: error.message });
     }
   }
 

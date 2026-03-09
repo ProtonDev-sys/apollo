@@ -104,6 +104,8 @@ class LibraryService {
       album: metadata.album,
       duration: metadata.duration,
       provider: metadata.provider,
+      artwork: metadata.artwork,
+      providerIds: metadata.providerIds,
       sourceUrl: metadata.sourceUrl,
       filePath: targetPath
     });
