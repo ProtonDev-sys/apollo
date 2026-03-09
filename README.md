@@ -145,13 +145,7 @@ General notes:
 
 Returns server status and library overview.
 
-Example:
-
-```powershell
-curl.exe http://127.0.0.1:4848/api/health
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -181,13 +175,7 @@ Query params:
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
 
-Example:
-
-```powershell
-curl.exe "http://127.0.0.1:4848/api/tracks?q=daft&page=1&pageSize=20"
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -225,13 +213,7 @@ Query params:
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
 
-Example:
-
-```powershell
-curl.exe "http://127.0.0.1:4848/api/search?query=daft%20punk&scope=all&provider=all&page=1&pageSize=10"
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -278,23 +260,27 @@ Notes:
 
 Resolves a playable URL for either a downloaded library track or a remote result.
 
-For a library track:
+Request body for a library track:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/playback `
-  -H "Content-Type: application/json" `
-  -d "{\"trackId\":\"track-id\"}"
+```json
+{
+  "trackId": "track-id"
+}
 ```
 
-For a remote result:
+Request body for a remote result:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/playback `
-  -H "Content-Type: application/json" `
-  -d "{\"provider\":\"youtube\",\"title\":\"One More Time\",\"artist\":\"Daft Punk\",\"downloadTarget\":\"https://www.youtube.com/watch?v=abc123\"}"
+```json
+{
+  "provider": "youtube",
+  "title": "One More Time",
+  "artist": "Daft Punk",
+  "album": "Discovery",
+  "downloadTarget": "https://www.youtube.com/watch?v=abc123"
+}
 ```
 
-Library response shape:
+Response for a library track:
 
 ```json
 {
@@ -307,7 +293,7 @@ Library response shape:
 }
 ```
 
-Remote response shape:
+Response for a remote result:
 
 ```json
 {
@@ -321,19 +307,31 @@ Remote response shape:
 }
 ```
 
+### Download APIs
+
+Apollo has two download endpoints:
+
+- `POST /api/downloads/server` downloads a remote track into the Apollo server library
+- `POST /api/downloads/client` returns a direct download URL so the client can download the file itself
+
 ### `POST /api/downloads/server`
 
 Queues a remote item to be downloaded, converted, organised into the library, and indexed on the server.
 
-Example:
+Request body:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/downloads/server `
-  -H "Content-Type: application/json" `
-  -d "{\"provider\":\"youtube\",\"title\":\"One More Time\",\"artist\":\"Daft Punk\",\"album\":\"Discovery\",\"downloadTarget\":\"https://www.youtube.com/watch?v=abc123\",\"externalUrl\":\"https://www.youtube.com/watch?v=abc123\"}"
+```json
+{
+  "provider": "youtube",
+  "title": "One More Time",
+  "artist": "Daft Punk",
+  "album": "Discovery",
+  "downloadTarget": "https://www.youtube.com/watch?v=abc123",
+  "externalUrl": "https://www.youtube.com/watch?v=abc123"
+}
 ```
 
-Response shape:
+Response example:
 
 ```json
 {
@@ -364,13 +362,7 @@ Statuses:
 
 Lists download jobs, newest first.
 
-Example:
-
-```powershell
-curl.exe http://127.0.0.1:4848/api/downloads
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -391,23 +383,27 @@ Response shape:
 
 Resolves a download URL for the client without storing the file on the Apollo server.
 
-For a library track:
+Request body for a library track:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/downloads/client `
-  -H "Content-Type: application/json" `
-  -d "{\"trackId\":\"track-id\"}"
+```json
+{
+  "trackId": "track-id"
+}
 ```
 
-For a remote result:
+Request body for a remote result:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/downloads/client `
-  -H "Content-Type: application/json" `
-  -d "{\"provider\":\"youtube\",\"title\":\"One More Time\",\"artist\":\"Daft Punk\",\"downloadTarget\":\"https://www.youtube.com/watch?v=abc123\"}"
+```json
+{
+  "provider": "youtube",
+  "title": "One More Time",
+  "artist": "Daft Punk",
+  "album": "Discovery",
+  "downloadTarget": "https://www.youtube.com/watch?v=abc123"
+}
 ```
 
-Response shape:
+Response example:
 
 ```json
 {
@@ -423,15 +419,15 @@ Response shape:
 
 Inspects a direct media URL and returns a normalized item that can be used for playback or download.
 
-Example:
+Request body:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/inspect-link `
-  -H "Content-Type: application/json" `
-  -d "{\"url\":\"https://www.youtube.com/watch?v=abc123\"}"
+```json
+{
+  "url": "https://www.youtube.com/watch?v=abc123"
+}
 ```
 
-Response shape:
+Response example:
 
 ```json
 {
@@ -451,13 +447,7 @@ Response shape:
 
 Rescans the configured library directory and reindexes files.
 
-Example:
-
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/library/rescan
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -473,13 +463,7 @@ Response shape:
 
 Lists playlists with expanded track objects.
 
-Example:
-
-```powershell
-curl.exe http://127.0.0.1:4848/api/playlists
-```
-
-Response shape:
+Response example:
 
 ```json
 {
@@ -507,51 +491,49 @@ Response shape:
 
 Creates a playlist.
 
-Example:
+Request body:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/playlists `
-  -H "Content-Type: application/json" `
-  -d "{\"name\":\"Favorites\",\"description\":\"Main rotation\"}"
+```json
+{
+  "name": "Favorites",
+  "description": "Main rotation"
+}
 ```
 
 ### `POST /api/playlists/:id/tracks`
 
 Adds a downloaded library track to a playlist.
 
-Example:
+Path params:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:4848/api/playlists/playlist-id/tracks `
-  -H "Content-Type: application/json" `
-  -d "{\"trackId\":\"track-id\"}"
+- `id`: playlist ID
+
+Request body:
+
+```json
+{
+  "trackId": "track-id"
+}
 ```
 
 ### `DELETE /api/playlists/:id/tracks/:trackId`
 
 Removes a track from a playlist.
 
-Example:
+Path params:
 
-```powershell
-curl.exe -X DELETE http://127.0.0.1:4848/api/playlists/playlist-id/tracks/track-id
-```
+- `id`: playlist ID
+- `trackId`: library track ID
 
 ### `GET /stream/:trackId`
 
 Streams a downloaded library file from Apollo.
 
-Examples:
-
-```powershell
-curl.exe http://127.0.0.1:4848/stream/track-id
-curl.exe -OJ "http://127.0.0.1:4848/stream/track-id?download=1"
-```
-
 Notes:
 
 - supports `Range` requests for media playback
 - add `?download=1` to force a file download
+- `trackId` is the ID of a downloaded library track
 - only works for downloaded library tracks, not remote provider items
 
 ### Error responses
