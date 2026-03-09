@@ -21,6 +21,63 @@ Apollo is the server-side app for a personal music system. It ships with:
 - `ffmpeg`
 - optional Spotify API credentials for Spotify metadata search
 
+## Install and first setup
+
+### 1. Install Node.js
+
+Install Node.js 20 or newer.
+
+Windows:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+```
+
+### 2. Install Apollo dependencies
+
+Apollo needs `yt-dlp` and `ffmpeg` for provider search, playback resolution, and server-side downloads.
+
+Windows:
+
+```powershell
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg.Essentials
+```
+
+If you already have custom installs of either tool, you can point Apollo at them in the UI or shared config file.
+
+### 3. Install project dependencies
+
+From the project folder:
+
+```powershell
+npm.cmd install
+```
+
+### 4. Optional Spotify setup
+
+Spotify support is metadata-only. It is optional.
+
+If you want Spotify search:
+
+- create a Spotify developer app
+- copy the client ID and client secret
+- paste them into Apollo UI config or the shared config file
+
+### 5. Shared config location
+
+Apollo UI and Apollo CLI use the same config file:
+
+```text
+C:\Users\<you>\AppData\Roaming\apollo\config.json
+```
+
+You can print the exact path on your machine with:
+
+```powershell
+npm.cmd run config:path
+```
+
 ## Run the UI
 
 ```powershell
