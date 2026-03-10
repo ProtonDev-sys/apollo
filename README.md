@@ -88,7 +88,30 @@ You can print the exact path on your machine with:
 npm.cmd run config:path
 ```
 
-### 6. Optional API authentication
+### 6. Optional background start on login
+
+On Windows, Apollo can start the server automatically when the user signs in.
+
+Setup in the UI:
+
+1. Start Apollo with `npm.cmd start`
+2. In `Config`, enable `Start server on login`
+3. Click `Save`
+
+How it works:
+
+- Apollo writes a launcher into the user Startup folder
+- Windows starts Apollo in hidden `--background` mode on login
+- the server runs without opening the UI window
+
+Notes:
+
+- this is Windows-only
+- when enabled, closing the UI window keeps Apollo running in the background
+- opening Apollo again reuses the background instance instead of starting a second server
+- to stop background mode completely, open Apollo, turn `Start server on login` off, click `Save`, then close the app
+
+### 7. Optional API authentication
 
 Apollo can require one shared secret for all API, stream, and playlist artwork requests. There are no user accounts.
 
@@ -182,6 +205,8 @@ Notes:
 npm.cmd install
 npm.cmd start
 ```
+
+If `Start server on login` is enabled, Windows launches Apollo in hidden background mode at sign-in and the UI window stays closed until you open the app manually.
 
 ## Run headless
 

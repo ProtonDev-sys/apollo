@@ -2,13 +2,27 @@ const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const { createRuntime } = require('./app/runtime');
 const { APP_NAME, ensureAppDataDirectory } = require('./app/paths');
+const { StartupService } = require('./app/startup-service');
 
 let mainWindow = null;
 let runtime = null;
+let keepRunningInBackground = false;
+
+const isBackgroundLaunch = process.argv.includes('--background');
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
 
 app.setName(APP_NAME);
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -24,6 +38,9 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 }
 
 function emitDownloadUpdate(download) {
@@ -34,14 +51,22 @@ function emitDownloadUpdate(download) {
 
 app.whenReady().then(async () => {
   const baseDir = await ensureAppDataDirectory();
+  const startupService = new StartupService({
+    appRoot: __dirname
+  });
+
   runtime = await createRuntime({
     baseDir,
+    startupService,
     musicRoot: app.getPath('music'),
     onDownloadUpdate: (download) => emitDownloadUpdate(download)
   });
-  await runtime.start();
+  const dashboard = await runtime.start();
+  keepRunningInBackground = Boolean(dashboard.settings.autoStartBackgroundServer);
 
-  createWindow();
+  if (!isBackgroundLaunch || !keepRunningInBackground) {
+    createWindow();
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -50,11 +75,19 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on('second-instance', () => {
+  createWindow();
+});
+
 app.on('before-quit', async () => {
   await runtime?.stop();
 });
 
 app.on('window-all-closed', () => {
+  if (keepRunningInBackground) {
+    return;
+  }
+
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -63,7 +96,9 @@ app.on('window-all-closed', () => {
 ipcMain.handle('app:get-dashboard', async () => runtime.getDashboard());
 
 ipcMain.handle('settings:save', async (_event, nextSettings) => {
-  return runtime.saveSettings(nextSettings);
+  const payload = await runtime.saveSettings(nextSettings);
+  keepRunningInBackground = Boolean(payload.settings.autoStartBackgroundServer);
+  return payload;
 });
 
 ipcMain.handle('settings:pick-directory', async () => {

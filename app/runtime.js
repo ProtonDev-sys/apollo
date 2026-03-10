@@ -36,6 +36,7 @@ async function createRuntime({
   baseDir,
   musicRoot,
   settingsOverrides = {},
+  startupService = null,
   onDownloadUpdate = () => {}
 }) {
   const store = new DataStore({
@@ -43,9 +44,11 @@ async function createRuntime({
     defaultSettings: createDefaultSettings(musicRoot)
   });
   await store.init();
+  await startupService?.sync(store.getSettings());
 
   if (Object.keys(settingsOverrides).length) {
     await store.updateSettings(settingsOverrides);
+    await startupService?.sync(store.getSettings());
   }
 
   const libraryService = new LibraryService(store);
@@ -235,6 +238,7 @@ async function createRuntime({
 
   async function saveSettings(nextSettings) {
     const settings = await store.updateSettings(nextSettings);
+    await startupService?.sync(store.getSettings());
     authService.clearSessions();
     await ensureDirectories();
     await musicServer.start({

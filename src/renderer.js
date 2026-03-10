@@ -15,6 +15,7 @@ const elements = {
     serverPort: document.getElementById('serverPort'),
     apiAuthEnabled: document.getElementById('apiAuthEnabled'),
     apiSessionTtlHours: document.getElementById('apiSessionTtlHours'),
+    autoStartBackgroundServer: document.getElementById('autoStartBackgroundServer'),
     libraryDirectory: document.getElementById('libraryDirectory'),
     incomingDirectory: document.getElementById('incomingDirectory'),
     ytDlpPath: document.getElementById('ytDlpPath'),

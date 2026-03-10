@@ -17,6 +17,7 @@ function createDefaultSettings(musicRoot) {
     incomingDirectory: path.join(serverRoot, 'incoming'),
     serverHost: '127.0.0.1',
     serverPort: '4848',
+    autoStartBackgroundServer: false,
     apiAuthEnabled: false,
     apiSessionTtlHours: 168,
     apiSharedSecretHash: '',
