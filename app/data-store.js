@@ -407,7 +407,7 @@ class DataStore {
     };
   }
 
-  async upsertTrack(track) {
+  applyTrackUpsert(track) {
     const index = this.state.tracks.findIndex(
       (existing) => existing.id === track.id || existing.filePath === track.filePath
     );
@@ -441,8 +441,23 @@ class DataStore {
       this.state.tracks.push(nextTrack);
     }
 
+    return nextTrack;
+  }
+
+  async upsertTrack(track) {
+    const nextTrack = this.applyTrackUpsert(track);
     await this.persist();
     return nextTrack;
+  }
+
+  async upsertTracks(tracks = []) {
+    const upsertedTracks = [];
+    for (const track of tracks) {
+      upsertedTracks.push(this.applyTrackUpsert(track));
+    }
+
+    await this.persist();
+    return upsertedTracks;
   }
 
   async removeTracksMissingFromPaths(existingPaths) {

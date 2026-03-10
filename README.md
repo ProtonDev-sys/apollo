@@ -254,6 +254,7 @@ General notes:
 - send `X-Client-Id: <stable-client-id>` on search requests so Apollo can cancel older in-flight searches from the same client without affecting other clients
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - Apollo reuses in-flight work for identical expensive requests and keeps a short in-memory cache for recent search, playback, download-resolution, and inspect-link responses
+- library rescans batch catalog writes instead of persisting each discovered file individually
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
@@ -462,6 +463,7 @@ Notes:
 - if the same client sends a newer search before the previous one completes, Apollo cancels the older search and keeps the newer one
 - different `X-Client-Id` values are isolated, so one client does not cancel another client's search
 - Apollo keeps a short in-memory cache of recent identical searches to avoid repeating provider work
+- duplicate remote results from fallback/provider overlap are collapsed into a single best result
 - Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
 - if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
 - `provider=all` includes `spotify`, `youtube`, and `soundcloud`
@@ -697,6 +699,7 @@ Response example:
 Notes:
 
 - if several rescans are requested at the same time, Apollo shares one in-flight rescan instead of starting multiple scans
+- discovered tracks are written back in batches so large rescans do not hammer the state file
 
 ### `GET /api/playlists`
 

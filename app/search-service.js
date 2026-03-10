@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
 const { createHttpError, isAbortError } = require('./http-error');
+const { isTrackEquivalent } = require('./data-store');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
 const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
@@ -8,6 +9,7 @@ const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud'];
 const NON_SONG_VIDEO_PATTERN =
   /\b(lyrics?|official video|video clip|reaction|karaoke|cover|live|sped up|slowed|nightcore|fanmade|fan-made)\b/i;
 const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
+const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify']);
 
 function isSpotifyTrackUrl(value) {
   return /^https?:\/\/open\.spotify\.com\/track\/[a-zA-Z0-9]+/i.test(String(value || '').trim());
@@ -387,6 +389,58 @@ function isPreferredMusicResult(entry, provider, query) {
   return !NON_SONG_VIDEO_PATTERN.test(title);
 }
 
+function scoreRemoteResult(item) {
+  let score = 0;
+
+  if (item.provider === 'spotify') {
+    score += 50;
+  } else if (item.provider === 'youtube') {
+    score += 20;
+  } else if (item.provider === 'soundcloud') {
+    score += 10;
+  }
+
+  if (item.requestedProvider) {
+    score -= 20;
+  }
+
+  if (item.metadataSource === 'spotify' || item.metadataSource === 'spotify-page') {
+    score += 25;
+  }
+
+  if (item.artwork) {
+    score += 5;
+  }
+
+  if (item.duration) {
+    score += 3;
+  }
+
+  if (!GENERIC_ALBUM_NAMES.has(String(item.album || '').trim().toLowerCase())) {
+    score += 2;
+  }
+
+  return score;
+}
+
+function dedupeRemoteItems(items) {
+  const dedupedItems = [];
+
+  for (const item of items) {
+    const duplicateIndex = dedupedItems.findIndex((existingItem) => isTrackEquivalent(existingItem, item));
+    if (duplicateIndex < 0) {
+      dedupedItems.push(item);
+      continue;
+    }
+
+    if (scoreRemoteResult(item) > scoreRemoteResult(dedupedItems[duplicateIndex])) {
+      dedupedItems[duplicateIndex] = item;
+    }
+  }
+
+  return dedupedItems;
+}
+
 async function searchViaYtDlp(query, provider, page, pageSize, settings, signal) {
   const ytDlpPath = await resolveExecutablePath(
     settings.ytDlpPath,
@@ -511,12 +565,14 @@ async function searchProviders(
     warnings.push(`${providerName}: ${result.reason.message}`);
   }
 
+  const dedupedItems = dedupeRemoteItems(items);
+
   return {
-    items,
-    total: items.length,
+    items: dedupedItems,
+    total: dedupedItems.length,
     page: safePage,
     pageSize: safePageSize,
-    totalPages: Math.max(1, Math.ceil(items.length / safePageSize)),
+    totalPages: Math.max(1, Math.ceil(dedupedItems.length / safePageSize)),
     provider: providers,
     providerErrors,
     warning: warnings.join(' ')

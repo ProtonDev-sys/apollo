@@ -92,16 +92,18 @@ class LibraryService {
   async syncLibrary(libraryDirectory) {
     await fs.mkdir(libraryDirectory, { recursive: true });
     const files = await walkAudioFiles(libraryDirectory);
+    const discoveredTracks = [];
 
     for (const filePath of files) {
       const inferred = inferTrackFromPath(libraryDirectory, filePath);
-      await this.store.upsertTrack({
+      discoveredTracks.push({
         ...inferred,
         filePath,
         provider: 'library'
       });
     }
 
+    await this.store.upsertTracks(discoveredTracks);
     await this.store.removeTracksMissingFromPaths(files);
     return this.store.listTracks({ page: 1, pageSize: 8 });
   }
