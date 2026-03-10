@@ -51,7 +51,7 @@ function hasSameProviderIdentity(leftProviderIds = {}, rightProviderIds = {}) {
     return true;
   }
 
-  return ['spotify', 'youtube', 'soundcloud', 'itunes'].some((key) => {
+  return ['spotify', 'youtube', 'soundcloud', 'itunes', 'deezer'].some((key) => {
     return leftIds[key] && rightIds[key] && leftIds[key] === rightIds[key];
   });
 }

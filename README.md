@@ -44,6 +44,7 @@ http://127.0.0.1:4848
 
 - `MusicBrainz`: no-key artist identity, artist profile data, and release groups
 - `iTunes`: no-key general song metadata and default artist track listings
+- `Deezer`: no-key fast track and artist metadata
 - `YouTube`: search, playback resolution, and download fallback
 - `SoundCloud`: search, playback resolution, and download fallback
 - `Spotify`: optional metadata source when credentials work, plus direct Spotify track URL handling
@@ -282,6 +283,7 @@ General notes:
 - Apollo reuses in-flight work for identical expensive requests and keeps a short in-memory cache for recent search, playback, download-resolution, and inspect-link responses
 - library rescans batch catalog writes instead of persisting each discovered file individually
 - MusicBrainz-backed artist requests are throttled and cached because MusicBrainz documents a 1 request/second rate limit
+- multi-provider search favors fast cold responses; slower providers may time out in `provider=all` so the API can return under budget
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
@@ -429,7 +431,7 @@ Query params:
 
 - `query` or `q`: search term
 - `scope`: `all`, `library`, or `remote`
-- `provider`: `all`, `youtube`, `soundcloud`, `spotify`, or `itunes`
+- `provider`: `all`, `youtube`, `soundcloud`, `spotify`, `itunes`, or `deezer`
 - `clientId`: optional fallback for client identification if you cannot send `X-Client-Id`
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
@@ -492,9 +494,11 @@ Notes:
 - Apollo keeps a short in-memory cache of recent identical searches to avoid repeating provider work
 - duplicate remote results from fallback/provider overlap are collapsed into a single best result
 - `itunes` is the built-in no-key metadata provider for general song search
+- `deezer` is another no-key fast metadata provider for cold search
+- in `provider=all`, Apollo applies tight deadlines to slower providers to keep the response fast; request `provider=youtube`, `provider=soundcloud`, or `provider=spotify` directly when you want those slower searches explicitly
 - Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
 - if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
-- `provider=all` includes `spotify`, `youtube`, `soundcloud`, and `itunes`
+- `provider=all` includes `spotify`, `youtube`, `soundcloud`, `itunes`, and `deezer`
 
 ### `GET /api/artists`
 

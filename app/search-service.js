@@ -2,15 +2,45 @@ const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
 const { createHttpError, isAbortError } = require('./http-error');
 const { isTrackEquivalent } = require('./data-store');
-const { searchItunesTracks } = require('./public-metadata-service');
+const { searchDeezerTracks, searchItunesTracks } = require('./public-metadata-service');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
 const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
-const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud', 'itunes'];
+const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud', 'itunes', 'deezer'];
 const NON_SONG_VIDEO_PATTERN =
   /\b(lyrics?|official video|video clip|reaction|karaoke|cover|live|sped up|slowed|nightcore|fanmade|fan-made)\b/i;
 const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
-const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify']);
+const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
+const FAST_MULTI_PROVIDER_TIMEOUT_MS = 900;
+
+function createTimeoutError(message) {
+  const error = new Error(message);
+  error.code = 'ETIMEDOUT';
+  return error;
+}
+
+function isTimeoutError(error) {
+  return Boolean(error && error.code === 'ETIMEDOUT');
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(createTimeoutError(message));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
+}
 
 function isSpotifyTrackUrl(value) {
   return /^https?:\/\/open\.spotify\.com\/track\/[a-zA-Z0-9]+/i.test(String(value || '').trim());
@@ -279,6 +309,10 @@ function resolveProviderName(entry, fallbackProvider = 'link') {
     return 'soundcloud';
   }
 
+  if (extractor.includes('deezer')) {
+    return 'deezer';
+  }
+
   if (extractor.includes('itunes') || extractor.includes('apple')) {
     return 'itunes';
   }
@@ -399,6 +433,8 @@ function scoreRemoteResult(item) {
 
   if (item.provider === 'spotify') {
     score += 50;
+  } else if (item.provider === 'deezer') {
+    score += 40;
   } else if (item.provider === 'itunes') {
     score += 35;
   } else if (item.provider === 'youtube') {
@@ -413,6 +449,8 @@ function scoreRemoteResult(item) {
 
   if (item.metadataSource === 'spotify' || item.metadataSource === 'spotify-page') {
     score += 25;
+  } else if (item.metadataSource === 'deezer') {
+    score += 18;
   } else if (item.metadataSource === 'itunes') {
     score += 15;
   }
@@ -520,22 +558,39 @@ async function searchProviders(
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
   const providers = parseProviderSelection(provider);
+  const fastMultiProviderMode = providers.length > 1;
   const results = await Promise.allSettled(
     providers.map((selectedProvider) => {
+      let request;
       if (selectedProvider === 'spotify') {
-        return searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
-      }
-
-      if (selectedProvider === 'itunes') {
-        return searchItunesTracks({
+        request = searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
+      } else if (selectedProvider === 'itunes') {
+        request = searchItunesTracks({
           query: trimmedQuery,
           page: safePage,
           pageSize: safePageSize,
           signal
         });
+      } else if (selectedProvider === 'deezer') {
+        request = searchDeezerTracks({
+          query: trimmedQuery,
+          page: safePage,
+          pageSize: safePageSize,
+          signal
+        });
+      } else {
+        request = searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
       }
 
-      return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
+      if (fastMultiProviderMode && ['spotify', 'youtube', 'soundcloud'].includes(selectedProvider)) {
+        return withTimeout(
+          request,
+          FAST_MULTI_PROVIDER_TIMEOUT_MS,
+          `${selectedProvider} search timed out after ${FAST_MULTI_PROVIDER_TIMEOUT_MS}ms.`
+        );
+      }
+
+      return request;
     })
   );
 
@@ -556,7 +611,7 @@ async function searchProviders(
 
     providerErrors[providerName] = result.reason.message;
 
-    if (providerName === 'spotify') {
+    if (providerName === 'spotify' && !fastMultiProviderMode && !isTimeoutError(result.reason)) {
       try {
         const fallback = await searchSpotifyFallback(
           trimmedQuery,

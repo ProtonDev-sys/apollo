@@ -4,6 +4,7 @@ const { normalizeTrackMetadata, normaliseComparable } = require('./metadata-norm
 
 const MUSICBRAINZ_BASE_URL = 'https://musicbrainz.org/ws/2';
 const ITUNES_SEARCH_URL = 'https://itunes.apple.com/search';
+const DEEZER_API_BASE_URL = 'https://api.deezer.com';
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const MUSICBRAINZ_MIN_INTERVAL_MS = 1100;
 const MUSICBRAINZ_HEADERS = {
@@ -194,6 +195,43 @@ function formatItunesTrack(track) {
     downloadTarget: buildYouTubeSearchTarget(normalized.artist, normalized.title),
     providerIds: createEmptyProviderIds({
       itunes: track.trackId || track.collectionId || ''
+    }),
+    normalizedTitle: normalized.normalizedTitle,
+    normalizedArtist: normalized.normalizedArtist,
+    normalizedAlbum: normalized.normalizedAlbum,
+    normalizedDuration: normalized.normalizedDuration,
+    metadataSource: normalized.metadataSource
+  };
+}
+
+function formatDeezerTrack(track) {
+  const normalized = normalizeTrackMetadata({
+    provider: 'deezer',
+    title: track.title || track.title_short || 'Untitled',
+    artist: track.artist?.name || 'Unknown Artist',
+    album: track.album?.title || 'Deezer',
+    duration: track.duration || null,
+    metadataSource: 'deezer'
+  });
+
+  return {
+    id: `deezer:${track.id || normalized.normalizedTitle}`,
+    provider: 'deezer',
+    title: normalized.title,
+    artist: normalized.artist,
+    album: normalized.album,
+    duration: normalized.duration,
+    artwork:
+      track.album?.cover_medium ||
+      track.album?.cover ||
+      track.artist?.picture_medium ||
+      track.artist?.picture ||
+      '',
+    externalUrl: track.link || '',
+    downloadTarget: buildYouTubeSearchTarget(normalized.artist, normalized.title),
+    providerIds: createEmptyProviderIds({
+      isrc: track.isrc || '',
+      deezer: track.id || ''
     }),
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
@@ -475,10 +513,44 @@ async function searchItunesTracks({ query, page = 1, pageSize = 10, signal } = {
   };
 }
 
+async function searchDeezerTracks({ query, page = 1, pageSize = 10, signal } = {}) {
+  const trimmedQuery = String(query || '').trim();
+  if (!trimmedQuery) {
+    return {
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize,
+      totalPages: 1
+    };
+  }
+
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safePageSize = Math.min(25, Math.max(1, Number.parseInt(pageSize, 10) || 10));
+  const index = (safePage - 1) * safePageSize;
+  const url =
+    `${DEEZER_API_BASE_URL}/search?q=${encodeURIComponent(trimmedQuery)}` +
+    `&limit=${safePageSize}&index=${index}`;
+  const payload = await fetchCachedJson(`deezer:search:${safePage}:${safePageSize}:${trimmedQuery}`, url, {
+    signal,
+    ttlMs: 5 * 60 * 1000
+  });
+  const total = Number(payload.total) || 0;
+
+  return {
+    items: (payload.data || []).map(formatDeezerTrack),
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages: Math.max(1, Math.ceil(total / safePageSize))
+  };
+}
+
 module.exports = {
   searchArtists,
   getArtistProfile,
   listArtistReleases,
   listArtistTracks,
-  searchItunesTracks
+  searchItunesTracks,
+  searchDeezerTracks
 };
