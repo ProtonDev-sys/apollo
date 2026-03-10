@@ -14,6 +14,7 @@ const { createHttpError } = require('./http-error');
 const { formatApiTrack, formatApiPlaylist, resolvePlaylistArtworkUrl } = require('./models');
 const { DownloadService } = require('./download-service');
 const { createMusicServer } = require('./music-server');
+const { AuthService } = require('./auth-service');
 
 const PLAYLIST_ARTWORK_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
@@ -52,6 +53,7 @@ async function createRuntime({
     store,
     libraryService
   });
+  const authService = new AuthService({ store });
   const mediaDirectory = path.join(baseDir, 'media');
   const playlistArtworkDirectory = path.join(mediaDirectory, 'playlists');
 
@@ -178,6 +180,10 @@ async function createRuntime({
     uploadPlaylistArtwork: savePlaylistArtwork,
     deletePlaylistArtwork,
     getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
+    getAuthStatus: () => authService.getPublicStatus(),
+    createAuthSession: (payload) => authService.createSession(payload),
+    revokeAuthSession: ({ token }) => authService.revokeSession(token),
+    authenticateRequest: ({ token }) => authService.validateSessionToken(token),
     listDownloads: () => downloadService.getDownloads(),
     getDownload: (downloadId) => store.getDownload(downloadId),
     queueDownload: (payload) => downloadService.queueDownload(payload),
@@ -215,9 +221,10 @@ async function createRuntime({
   async function getDashboard() {
     const settings = store.getSettings();
     return {
-      settings,
+      settings: store.getPublicSettings(),
       dependencies: await getDependencyState(settings),
       server: musicServer.getInfo(),
+      auth: authService.getPublicStatus(),
       overview: store.getOverview(),
       downloads: downloadService.getDownloads(),
       playlists: store.listPlaylists()
@@ -226,16 +233,18 @@ async function createRuntime({
 
   async function saveSettings(nextSettings) {
     const settings = await store.updateSettings(nextSettings);
+    authService.clearSessions();
     await ensureDirectories();
     await musicServer.start({
-      host: settings.serverHost,
-      port: settings.serverPort
+      host: store.getSettings().serverHost,
+      port: store.getSettings().serverPort
     });
 
     return {
       settings,
-      dependencies: await getDependencyState(settings),
-      server: musicServer.getInfo()
+      dependencies: await getDependencyState(store.getSettings()),
+      server: musicServer.getInfo(),
+      auth: authService.getPublicStatus()
     };
   }
 

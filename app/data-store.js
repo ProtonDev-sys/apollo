@@ -3,6 +3,10 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createHttpError } = require('./http-error');
 const { normaliseProviderIds } = require('./models');
+const {
+  createSharedSecretRecord,
+  normaliseSessionTtlHours
+} = require('./auth-service');
 
 function createDefaultSettings(musicRoot) {
   const serverRoot = path.join(musicRoot, 'Apollo');
@@ -13,6 +17,10 @@ function createDefaultSettings(musicRoot) {
     incomingDirectory: path.join(serverRoot, 'incoming'),
     serverHost: '127.0.0.1',
     serverPort: '4848',
+    apiAuthEnabled: false,
+    apiSessionTtlHours: 168,
+    apiSharedSecretHash: '',
+    apiSharedSecretSalt: '',
     spotifyClientId: '',
     spotifyClientSecret: ''
   };
@@ -41,20 +49,31 @@ class DataStore {
 
     await this.loadSettings();
     await this.mergeLegacySettings();
+    this.validateSettings(this.state.settings);
     await this.persist();
     await this.persistConfig();
 
     return this.getState();
   }
 
+  validateSettings(settings) {
+    if (
+      settings.apiAuthEnabled &&
+      !(settings.apiSharedSecretHash && settings.apiSharedSecretSalt)
+    ) {
+      throw createHttpError(400, 'Set an API shared secret before enabling API authentication.');
+    }
+  }
+
   async loadSettings() {
     try {
       const raw = await fs.readFile(this.configPath, 'utf8');
       const config = JSON.parse(raw);
+      const loadedSettings = this.normaliseLoadedSettings(config.settings || config);
       this.state.settings = {
         ...this.defaultSettings,
         ...this.state.settings,
-        ...(config.settings || config)
+        ...loadedSettings
       };
     } catch (error) {
       return;
@@ -107,12 +126,49 @@ class DataStore {
     };
   }
 
+  normaliseLoadedSettings(input = {}) {
+    const nextSettings = {
+      ...input
+    };
+
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'apiSharedSecret')) {
+      const plaintextSecret = String(nextSettings.apiSharedSecret || '').trim();
+      delete nextSettings.apiSharedSecret;
+
+      if (plaintextSecret) {
+        Object.assign(nextSettings, createSharedSecretRecord(plaintextSecret));
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'apiSessionTtlHours')) {
+      nextSettings.apiSessionTtlHours = normaliseSessionTtlHours(nextSettings.apiSessionTtlHours);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextSettings, 'apiAuthEnabled')) {
+      nextSettings.apiAuthEnabled = Boolean(nextSettings.apiAuthEnabled);
+    }
+
+    return nextSettings;
+  }
+
   getState() {
     return JSON.parse(JSON.stringify(this.state));
   }
 
   getSettings() {
     return { ...this.state.settings };
+  }
+
+  getPublicSettings() {
+    return {
+      ...this.state.settings,
+      apiSharedSecret: '',
+      apiSharedSecretConfigured: Boolean(
+        this.state.settings.apiSharedSecretHash && this.state.settings.apiSharedSecretSalt
+      ),
+      apiSharedSecretHash: '',
+      apiSharedSecretSalt: ''
+    };
   }
 
   getConfigPath() {
@@ -127,17 +183,42 @@ class DataStore {
       ])
     );
 
+    const currentSettings = this.state.settings;
+    const nextApiAuthEnabled = Object.prototype.hasOwnProperty.call(sanitised, 'apiAuthEnabled')
+      ? Boolean(sanitised.apiAuthEnabled)
+      : currentSettings.apiAuthEnabled;
+    const nextApiSessionTtlHours = Object.prototype.hasOwnProperty.call(
+      sanitised,
+      'apiSessionTtlHours'
+    )
+      ? normaliseSessionTtlHours(sanitised.apiSessionTtlHours)
+      : normaliseSessionTtlHours(currentSettings.apiSessionTtlHours);
+    const nextSharedSecret = Object.prototype.hasOwnProperty.call(sanitised, 'apiSharedSecret')
+      ? String(sanitised.apiSharedSecret || '').trim()
+      : '';
+
     this.state.settings = {
       ...this.defaultSettings,
       ...this.state.settings,
       ...Object.fromEntries(
-        Object.entries(sanitised).filter(([, value]) => value !== '')
-      )
+        Object.entries(sanitised).filter(
+          ([key, value]) =>
+            value !== '' && !['apiAuthEnabled', 'apiSessionTtlHours', 'apiSharedSecret'].includes(key)
+        )
+      ),
+      apiAuthEnabled: nextApiAuthEnabled,
+      apiSessionTtlHours: nextApiSessionTtlHours
     };
+
+    if (nextSharedSecret) {
+      Object.assign(this.state.settings, createSharedSecretRecord(nextSharedSecret));
+    }
+
+    this.validateSettings(this.state.settings);
 
     await this.persist();
     await this.persistConfig();
-    return this.getSettings();
+    return this.getPublicSettings();
   }
 
   async persist() {

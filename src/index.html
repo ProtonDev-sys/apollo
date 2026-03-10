@@ -60,6 +60,14 @@
             <span>Port</span>
             <input id="serverPort" type="text" />
           </label>
+          <label class="field">
+            <span>Require API auth</span>
+            <input id="apiAuthEnabled" type="checkbox" />
+          </label>
+          <label class="field">
+            <span>Session TTL (hours)</span>
+            <input id="apiSessionTtlHours" type="number" min="1" max="720" />
+          </label>
           <label class="field full-width">
             <span>Library directory</span>
             <div class="inline-field">
@@ -85,6 +93,10 @@
           <label class="field">
             <span>Spotify client ID</span>
             <input id="spotifyClientId" type="text" />
+          </label>
+          <label class="field">
+            <span>API shared secret</span>
+            <input id="apiSharedSecret" type="password" placeholder="Leave blank to keep current secret" />
           </label>
           <label class="field">
             <span>Spotify client secret</span>

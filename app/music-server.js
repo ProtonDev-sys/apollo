@@ -18,22 +18,23 @@ const MIME_TYPES = {
   '.webp': 'image/webp'
 };
 
+function setCorsHeaders(response) {
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+}
+
 function sendJson(response, statusCode, payload) {
+  setCorsHeaders(response);
   response.writeHead(statusCode, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS'
+    'Content-Type': 'application/json'
   });
   response.end(JSON.stringify(payload));
 }
 
 function sendNoContent(response) {
-  response.writeHead(204, {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS'
-  });
+  setCorsHeaders(response);
+  response.writeHead(204);
   response.end();
 }
 
@@ -128,8 +129,8 @@ function serveStaticFile(response, filePath) {
   const extension = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[extension] || 'application/octet-stream';
 
+  setCorsHeaders(response);
   response.writeHead(200, {
-    'Access-Control-Allow-Origin': '*',
     'Content-Type': contentType,
     'Content-Length': stat.size
   });
@@ -147,7 +148,7 @@ function streamTrack(request, response, track, requestUrl) {
   const contentType = MIME_TYPES[extension] || 'application/octet-stream';
   const range = request.headers.range;
 
-  response.setHeader('Access-Control-Allow-Origin', '*');
+  setCorsHeaders(response);
   response.setHeader('Accept-Ranges', 'bytes');
   response.setHeader('Content-Type', contentType);
   if (requestUrl.searchParams.get('download') === '1') {
@@ -184,6 +185,22 @@ function streamTrack(request, response, track, requestUrl) {
   fs.createReadStream(track.filePath, { start, end }).pipe(response);
 }
 
+function extractAccessToken(request, requestUrl) {
+  const authorization = request.headers.authorization || '';
+  if (authorization.startsWith('Bearer ')) {
+    return authorization.slice('Bearer '.length).trim();
+  }
+
+  return requestUrl.searchParams.get('access_token') || '';
+}
+
+function isPublicRoute(request, pathname) {
+  return (
+    (request.method === 'GET' && pathname === '/api/auth/status') ||
+    (request.method === 'POST' && pathname === '/api/auth/session')
+  );
+}
+
 function createMusicServer(services) {
   let server = null;
   let serverInfo = {
@@ -203,6 +220,29 @@ function createMusicServer(services) {
     const pathname = requestUrl.pathname;
 
     try {
+      if (request.method === 'GET' && pathname === '/api/auth/status') {
+        sendJson(response, 200, services.getAuthStatus());
+        return;
+      }
+
+      if (request.method === 'POST' && pathname === '/api/auth/session') {
+        const body = await readBody(request);
+        sendJson(response, 201, services.createAuthSession(body));
+        return;
+      }
+
+      if (!isPublicRoute(request, pathname)) {
+        const authStatus = services.getAuthStatus();
+        if (authStatus.enabled) {
+          const token = extractAccessToken(request, requestUrl);
+          const session = services.authenticateRequest({ token });
+          if (!session) {
+            sendJson(response, 401, { error: 'Authentication required.' });
+            return;
+          }
+        }
+      }
+
       const playlistArtworkMatch = pathname.match(/^\/media\/playlists\/([^/]+)$/);
       if (request.method === 'GET' && playlistArtworkMatch) {
         serveStaticFile(response, services.getPlaylistArtworkPath(decodeURIComponent(playlistArtworkMatch[1])));
@@ -343,6 +383,12 @@ function createMusicServer(services) {
       if (request.method === 'POST' && pathname === '/api/inspect-link') {
         const body = await readBody(request);
         sendJson(response, 200, await services.inspectLink(body.url || ''));
+        return;
+      }
+
+      if (request.method === 'DELETE' && pathname === '/api/auth/session') {
+        const token = extractAccessToken(request, requestUrl);
+        sendJson(response, 200, services.revokeAuthSession({ token }));
         return;
       }
 

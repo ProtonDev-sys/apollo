@@ -13,10 +13,13 @@ const elements = {
   settings: {
     serverHost: document.getElementById('serverHost'),
     serverPort: document.getElementById('serverPort'),
+    apiAuthEnabled: document.getElementById('apiAuthEnabled'),
+    apiSessionTtlHours: document.getElementById('apiSessionTtlHours'),
     libraryDirectory: document.getElementById('libraryDirectory'),
     incomingDirectory: document.getElementById('incomingDirectory'),
     ytDlpPath: document.getElementById('ytDlpPath'),
     ffmpegPath: document.getElementById('ffmpegPath'),
+    apiSharedSecret: document.getElementById('apiSharedSecret'),
     spotifyClientId: document.getElementById('spotifyClientId'),
     spotifyClientSecret: document.getElementById('spotifyClientSecret')
   }
@@ -40,23 +43,36 @@ async function safely(action) {
 
 function hydrateSettings(settings) {
   Object.entries(elements.settings).forEach(([key, input]) => {
+    if (input.type === 'checkbox') {
+      input.checked = Boolean(settings[key]);
+      return;
+    }
+
     input.value = settings[key] || '';
   });
 }
 
 function collectSettings() {
   return Object.fromEntries(
-    Object.entries(elements.settings).map(([key, input]) => [key, input.value.trim()])
+    Object.entries(elements.settings).map(([key, input]) => [
+      key,
+      input.type === 'checkbox' ? input.checked : input.value.trim()
+    ])
   );
 }
 
 function renderStatus(dashboard) {
   const server = dashboard.server;
   const overview = dashboard.overview;
+  const auth = dashboard.auth;
 
   elements.serverBadge.textContent = server.running ? 'Running' : 'Stopped';
   elements.serverBadge.className = `status-pill ${server.running ? 'ok' : 'warn'}`;
-  elements.serverUrl.textContent = server.baseUrl || 'Server unavailable';
+  elements.serverUrl.textContent = server.baseUrl
+    ? auth.enabled
+      ? `${server.baseUrl} (auth required)`
+      : server.baseUrl
+    : 'Server unavailable';
   elements.statTracks.textContent = overview.trackCount;
   elements.statPlaylists.textContent = overview.playlistCount;
   elements.statDownloads.textContent = overview.downloadCount;

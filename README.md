@@ -88,6 +88,85 @@ You can print the exact path on your machine with:
 npm.cmd run config:path
 ```
 
+### 6. Optional API authentication
+
+Apollo can lock down the API with one shared secret. There are no user accounts.
+
+How it works:
+
+1. The server owner creates one shared secret.
+2. A client sends that secret to Apollo one time.
+3. Apollo returns a bearer session token.
+4. The client uses that token on later API requests.
+
+This protects the API from random callers on the network, but it does not encrypt traffic by itself. If you expose Apollo outside your local machine or trusted LAN, put it behind HTTPS or a VPN.
+
+#### Recommended setup in the Electron UI
+
+1. Start Apollo with `npm.cmd start`
+2. In the `Config` section, set:
+   - `Require API auth`: enabled
+   - `Session TTL (hours)`: how long client tokens should stay valid
+   - `API shared secret`: a long secret phrase only you and your clients know
+3. Click `Save`
+4. Give the shared secret to the client owner through a secure channel
+
+Important behavior:
+
+- leave `API shared secret` blank when editing other settings if you want to keep the current secret
+- changing the shared secret revokes all existing client sessions
+- restarting Apollo revokes all existing client sessions
+
+#### Setup directly in `config.json`
+
+If you prefer editing the shared config file yourself, use these fields:
+
+```json
+{
+  "settings": {
+    "apiAuthEnabled": true,
+    "apiSessionTtlHours": 168,
+    "apiSharedSecret": "replace-this-with-a-long-secret"
+  }
+}
+```
+
+After saving the file, restart Apollo. On first load, Apollo hashes the secret before persisting the config. You do not need to keep re-entering the plaintext secret unless you want to rotate it.
+
+#### Client login flow
+
+1. Check auth status:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4848/api/auth/status
+```
+
+2. Create a session token:
+
+```powershell
+$session = Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:4848/api/auth/session `
+  -ContentType 'application/json' `
+  -Body '{"secret":"replace-this-with-the-shared-secret"}'
+```
+
+3. Use the returned token:
+
+```powershell
+Invoke-RestMethod `
+  -Headers @{ Authorization = "Bearer $($session.token)" } `
+  -Uri http://127.0.0.1:4848/api/health
+```
+
+For browser media elements or image tags where you cannot set headers, append `?access_token=...` to `/stream/...` and `/media/...` URLs.
+
+#### What Apollo stores
+
+- the shared secret is stored as a hash, not plaintext
+- session tokens are stored only in memory
+- session tokens expire automatically based on `apiSessionTtlHours`
+
 ## Run the UI
 
 ```powershell
@@ -137,9 +216,50 @@ General notes:
 
 - request and response bodies are JSON unless noted otherwise
 - set header `Content-Type: application/json` on `POST` requests
+- when API auth is enabled, send `Authorization: Bearer <token>` on all API requests after login
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
+
+### `GET /api/auth/status`
+
+Returns whether API auth is enabled and whether a shared secret is configured.
+
+Response example:
+
+```json
+{
+  "enabled": true,
+  "configured": true,
+  "sessionTtlHours": 168
+}
+```
+
+### `POST /api/auth/session`
+
+Authenticates a client with the shared secret and returns a session token.
+
+Request body:
+
+```json
+{
+  "secret": "your-shared-secret"
+}
+```
+
+Response example:
+
+```json
+{
+  "token": "session-token",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-03-16T10:00:00.000Z"
+}
+```
+
+### `DELETE /api/auth/session`
+
+Revokes the current session token.
 
 ### `GET /api/health`
 
@@ -526,6 +646,11 @@ Path params:
 - `trackId`: library track ID
 
 ### `GET /stream/:trackId`
+
+When API auth is enabled, either:
+
+- send `Authorization: Bearer <token>`
+- or append `?access_token=<token>` to the URL
 
 Streams a downloaded library file from Apollo.
 
