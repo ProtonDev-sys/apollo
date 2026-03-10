@@ -169,6 +169,25 @@ function normaliseArtistPayload(artist) {
   };
 }
 
+function normaliseDeezerArtistPayload(artist) {
+  return {
+    id: String(artist.id || ''),
+    name: artist.name || 'Unknown Artist',
+    artwork:
+      artist.picture_xl ||
+      artist.picture_big ||
+      artist.picture_medium ||
+      artist.picture_small ||
+      artist.picture ||
+      '',
+    externalUrl: artist.link || '',
+    albumCount: Number(artist.nb_album) || 0,
+    fanCount: Number(artist.nb_fan) || 0,
+    tracklistUrl: artist.tracklist || '',
+    source: 'deezer'
+  };
+}
+
 function buildYouTubeSearchTarget(artist, title) {
   return `ytsearch1:${[artist, title, 'audio'].filter(Boolean).join(' ')}`;
 }
@@ -239,6 +258,55 @@ function formatDeezerTrack(track) {
     normalizedDuration: normalized.normalizedDuration,
     metadataSource: normalized.metadataSource
   };
+}
+
+function formatMusicBrainzReleaseGroup(releaseGroup, artistId) {
+  return {
+    id: releaseGroup.id,
+    title: releaseGroup.title || 'Untitled Release',
+    primaryType: releaseGroup['primary-type'] || '',
+    secondaryTypes: releaseGroup['secondary-types'] || [],
+    firstReleaseDate: releaseGroup['first-release-date'] || '',
+    artistId,
+    source: 'musicbrainz'
+  };
+}
+
+function findBestDeezerArtistMatch(targetArtist, candidates = []) {
+  const targetName = normaliseComparable(targetArtist.name || '');
+  if (!targetName) {
+    return null;
+  }
+
+  return (
+    candidates.find((candidate) => normaliseComparable(candidate.name) === targetName) ||
+    candidates.find((candidate) => normaliseComparable(candidate.name).includes(targetName)) ||
+    candidates.find((candidate) => targetName.includes(normaliseComparable(candidate.name))) ||
+    null
+  );
+}
+
+function chooseBestRelease(releases = []) {
+  const sorted = [...releases].sort((left, right) => {
+    const leftDate = String(left.date || left['first-release-date'] || '');
+    const rightDate = String(right.date || right['first-release-date'] || '');
+
+    if (leftDate && rightDate) {
+      return leftDate.localeCompare(rightDate);
+    }
+
+    if (leftDate) {
+      return -1;
+    }
+
+    if (rightDate) {
+      return 1;
+    }
+
+    return 0;
+  });
+
+  return sorted[0] || null;
 }
 
 async function searchItunesArtistTracksByName(artistName, { signal } = {}) {
@@ -316,9 +384,59 @@ async function searchArtists({ query, page = 1, pageSize = 10, signal } = {}) {
     throttle: 'musicbrainz'
   });
   const total = payload.count || 0;
+  const artistItems = (payload.artists || []).map(normaliseArtistPayload);
+  const deezerCandidates = await searchDeezerArtists({
+    query: trimmedQuery,
+    page: 1,
+    pageSize: Math.min(10, safePageSize * 2),
+    signal
+  });
+  const enrichedItems = await Promise.all(
+    artistItems.map(async (artist, index) => {
+      if (index >= 5) {
+        return {
+          ...artist,
+          artwork: '',
+          providerIds: createEmptyProviderIds(),
+          topReleases: []
+        };
+      }
+
+      const deezerArtist = findBestDeezerArtistMatch(artist, deezerCandidates.items);
+      if (!deezerArtist) {
+        return {
+          ...artist,
+          artwork: '',
+          providerIds: createEmptyProviderIds(),
+          topReleases: []
+        };
+      }
+
+      const albums = await listDeezerArtistAlbums(deezerArtist.id, {
+        limit: 3,
+        signal
+      });
+
+      return {
+        ...artist,
+        artwork: deezerArtist.artwork,
+        externalUrl: deezerArtist.externalUrl,
+        providerIds: createEmptyProviderIds({
+          deezer: deezerArtist.id
+        }),
+        topReleases: albums.items.map((album) => ({
+          id: album.id,
+          title: album.title,
+          artwork: album.artwork,
+          releaseDate: album.releaseDate,
+          recordType: album.recordType
+        }))
+      };
+    })
+  );
 
   return {
-    items: (payload.artists || []).map(normaliseArtistPayload),
+    items: enrichedItems,
     total,
     page: safePage,
     pageSize: safePageSize,
@@ -340,14 +458,36 @@ async function getArtistProfile(artistId, { signal } = {}) {
     ttlMs: 15 * 60 * 1000
   });
   const profile = normaliseArtistPayload(artist);
+  const deezerCandidates = await searchDeezerArtists({
+    query: profile.name,
+    page: 1,
+    pageSize: 5,
+    signal
+  });
+  const deezerArtist = findBestDeezerArtistMatch(profile, deezerCandidates.items);
+  const deezerAlbums = deezerArtist
+    ? await listDeezerArtistAlbums(deezerArtist.id, { limit: 5, signal })
+    : { items: [] };
 
   return {
     ...profile,
+    artwork: deezerArtist?.artwork || '',
+    externalUrl: deezerArtist?.externalUrl || '',
+    providerIds: createEmptyProviderIds({
+      deezer: deezerArtist?.id || ''
+    }),
     aliases: (artist.aliases || []).map((alias) => alias.name).filter(Boolean).slice(0, 20),
     genres: (artist.genres || [])
       .map((genre) => genre.name)
       .filter(Boolean)
       .slice(0, 10),
+    topReleases: deezerAlbums.items.map((album) => ({
+      id: album.id,
+      title: album.title,
+      artwork: album.artwork,
+      releaseDate: album.releaseDate,
+      recordType: album.recordType
+    })),
     links: (artist.relations || [])
       .map((relation) => ({
         type: relation.type || '',
@@ -383,15 +523,9 @@ async function listArtistReleases(artistId, { page = 1, pageSize = 20, signal } 
   const total = payload['release-group-count'] || 0;
 
   return {
-    items: (payload['release-groups'] || []).map((releaseGroup) => ({
-      id: releaseGroup.id,
-      title: releaseGroup.title || 'Untitled Release',
-      primaryType: releaseGroup['primary-type'] || '',
-      secondaryTypes: releaseGroup['secondary-types'] || [],
-      firstReleaseDate: releaseGroup['first-release-date'] || '',
-      artistId: trimmedArtistId,
-      source: 'musicbrainz'
-    })),
+    items: (payload['release-groups'] || []).map((releaseGroup) =>
+      formatMusicBrainzReleaseGroup(releaseGroup, trimmedArtistId)
+    ),
     total,
     page: safePage,
     pageSize: safePageSize,
@@ -513,6 +647,175 @@ async function searchItunesTracks({ query, page = 1, pageSize = 10, signal } = {
   };
 }
 
+async function searchDeezerArtists({ query, page = 1, pageSize = 10, signal } = {}) {
+  const trimmedQuery = String(query || '').trim();
+  if (!trimmedQuery) {
+    return {
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize,
+      totalPages: 1
+    };
+  }
+
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safePageSize = Math.min(25, Math.max(1, Number.parseInt(pageSize, 10) || 10));
+  const index = (safePage - 1) * safePageSize;
+  const url =
+    `${DEEZER_API_BASE_URL}/search/artist?q=${encodeURIComponent(trimmedQuery)}` +
+    `&limit=${safePageSize}&index=${index}`;
+  const payload = await fetchCachedJson(
+    `deezer:artist-search:${safePage}:${safePageSize}:${trimmedQuery}`,
+    url,
+    {
+      signal,
+      ttlMs: 15 * 60 * 1000
+    }
+  );
+  const total = Number(payload.total) || 0;
+
+  return {
+    items: (payload.data || []).map(normaliseDeezerArtistPayload),
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages: Math.max(1, Math.ceil(total / safePageSize))
+  };
+}
+
+async function listDeezerArtistAlbums(artistId, { limit = 10, signal } = {}) {
+  const trimmedArtistId = String(artistId || '').trim();
+  if (!trimmedArtistId) {
+    return { items: [], total: 0 };
+  }
+
+  const safeLimit = Math.min(25, Math.max(1, Number.parseInt(limit, 10) || 10));
+  const url = `${DEEZER_API_BASE_URL}/artist/${encodeURIComponent(trimmedArtistId)}/albums?limit=${safeLimit}`;
+  const payload = await fetchCachedJson(`deezer:artist-albums:${trimmedArtistId}:${safeLimit}`, url, {
+    signal,
+    ttlMs: 15 * 60 * 1000
+  });
+
+  return {
+    items: (payload.data || []).map((album) => ({
+      id: `deezer-album:${album.id}`,
+      provider: 'deezer',
+      title: album.title || 'Untitled Album',
+      artwork: album.cover_medium || album.cover || '',
+      releaseDate: album.release_date || '',
+      recordType: album.record_type || '',
+      externalUrl: album.link || '',
+      tracklistUrl: album.tracklist || ''
+    })),
+    total: Number(payload.total) || (payload.data || []).length
+  };
+}
+
+async function listDeezerArtistTopTracks(artistId, { limit = 20, signal } = {}) {
+  const trimmedArtistId = String(artistId || '').trim();
+  if (!trimmedArtistId) {
+    return { items: [], total: 0 };
+  }
+
+  const safeLimit = Math.min(50, Math.max(1, Number.parseInt(limit, 10) || 20));
+  const url = `${DEEZER_API_BASE_URL}/artist/${encodeURIComponent(trimmedArtistId)}/top?limit=${safeLimit}`;
+  const payload = await fetchCachedJson(`deezer:artist-top:${trimmedArtistId}:${safeLimit}`, url, {
+    signal,
+    ttlMs: 15 * 60 * 1000
+  });
+
+  return {
+    items: (payload.data || []).map(formatDeezerTrack),
+    total: Number(payload.total) || (payload.data || []).length
+  };
+}
+
+async function listReleaseTracks(releaseGroupId, { signal } = {}) {
+  const trimmedReleaseGroupId = String(releaseGroupId || '').trim();
+  if (!trimmedReleaseGroupId) {
+    throw createHttpError(400, 'Release ID is required.');
+  }
+
+  const releaseGroupUrl =
+    `${MUSICBRAINZ_BASE_URL}/release-group/${encodeURIComponent(trimmedReleaseGroupId)}` +
+    '?fmt=json&inc=releases';
+  const releaseGroup = await fetchCachedJson(`mb:release-group:${trimmedReleaseGroupId}`, releaseGroupUrl, {
+    headers: MUSICBRAINZ_HEADERS,
+    signal,
+    throttle: 'musicbrainz',
+    ttlMs: 15 * 60 * 1000
+  });
+  const selectedRelease = chooseBestRelease(releaseGroup.releases || []);
+  if (!selectedRelease) {
+    return {
+      id: trimmedReleaseGroupId,
+      title: releaseGroup.title || 'Untitled Release',
+      releaseId: '',
+      items: []
+    };
+  }
+
+  const releaseUrl =
+    `${MUSICBRAINZ_BASE_URL}/release/${encodeURIComponent(selectedRelease.id)}` +
+    '?fmt=json&inc=recordings+artist-credits';
+  const release = await fetchCachedJson(`mb:release:${selectedRelease.id}`, releaseUrl, {
+    headers: MUSICBRAINZ_HEADERS,
+    signal,
+    throttle: 'musicbrainz',
+    ttlMs: 15 * 60 * 1000
+  });
+
+  const items = (release.media || []).flatMap((medium) =>
+    (medium.tracks || []).map((track) => {
+      const recording = track.recording || {};
+      const normalized = normalizeTrackMetadata({
+        provider: 'musicbrainz',
+        title: recording.title || track.title || 'Untitled',
+        artist:
+          recording['artist-credit']?.map((credit) => credit.name).join(', ') ||
+          release['artist-credit']?.map((credit) => credit.name).join(', ') ||
+          'Unknown Artist',
+        album: release.title || releaseGroup.title || 'Singles',
+        duration: recording.length ? Math.round(recording.length / 1000) : track.length ? Math.round(track.length / 1000) : null,
+        metadataSource: 'musicbrainz'
+      });
+
+      return {
+        id: `musicbrainz:${recording.id || track.id}`,
+        provider: 'musicbrainz',
+        title: normalized.title,
+        artist: normalized.artist,
+        album: normalized.album,
+        duration: normalized.duration,
+        artwork: '',
+        externalUrl: recording.id ? `https://musicbrainz.org/recording/${recording.id}` : '',
+        downloadTarget: buildYouTubeSearchTarget(normalized.artist, normalized.title),
+        providerIds: createEmptyProviderIds({
+          isrc: '',
+        }),
+        normalizedTitle: normalized.normalizedTitle,
+        normalizedArtist: normalized.normalizedArtist,
+        normalizedAlbum: normalized.normalizedAlbum,
+        normalizedDuration: normalized.normalizedDuration,
+        metadataSource: normalized.metadataSource,
+        releaseId: release.id,
+        releaseGroupId: trimmedReleaseGroupId,
+        discNumber: Number(medium.position) || 1,
+        trackNumber: Number(track.position) || 0
+      };
+    })
+  );
+
+  return {
+    id: trimmedReleaseGroupId,
+    title: releaseGroup.title || release.title || 'Untitled Release',
+    releaseId: release.id,
+    artist: release['artist-credit']?.map((credit) => credit.name).join(', ') || '',
+    items
+  };
+}
+
 async function searchDeezerTracks({ query, page = 1, pageSize = 10, signal } = {}) {
   const trimmedQuery = String(query || '').trim();
   if (!trimmedQuery) {
@@ -551,6 +854,11 @@ module.exports = {
   getArtistProfile,
   listArtistReleases,
   listArtistTracks,
+  listReleaseTracks,
   searchItunesTracks,
-  searchDeezerTracks
+  searchDeezerTracks,
+  searchDeezerArtists,
+  listDeezerArtistAlbums,
+  listDeezerArtistTopTracks,
+  searchItunesArtistTracksByName
 };

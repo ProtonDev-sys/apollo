@@ -434,6 +434,29 @@ function createMusicServer(services) {
         return;
       }
 
+      const releaseTracksRoute = pathname.match(/^\/api\/releases\/([^/]+)\/tracks$/);
+      if (request.method === 'GET' && releaseTracksRoute) {
+        const requestAbort = createRequestAbortController(
+          request,
+          'Release track request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `release-tracks:${releaseTracksRoute[1]}`,
+            requestSignal: requestAbort.signal,
+            execute: () =>
+              services.listReleaseTracks(releaseTracksRoute[1], {
+                signal: requestAbort.signal
+              })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       const artistRoute = pathname.match(/^\/api\/artists\/([^/]+)$/);
       if (request.method === 'GET' && artistRoute) {
         const requestAbort = createRequestAbortController(
@@ -455,6 +478,32 @@ function createMusicServer(services) {
       }
 
       const trackRoute = pathname.match(/^\/api\/tracks\/([^/]+)$/);
+      const trackRelatedRoute = pathname.match(/^\/api\/tracks\/([^/]+)\/related$/);
+      if (request.method === 'GET' && trackRelatedRoute) {
+        const payload = {
+          limit: requestUrl.searchParams.get('limit') || '12'
+        };
+        const requestAbort = createRequestAbortController(
+          request,
+          'Related track request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `related:${trackRelatedRoute[1]}:${stableSerialize(payload)}`,
+            requestSignal: requestAbort.signal,
+            execute: () =>
+              services.getRelatedTracks(trackRelatedRoute[1], payload, {
+                signal: requestAbort.signal
+              })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       if (request.method === 'DELETE' && trackRoute) {
         sendJson(response, 200, await services.deleteTrack(trackRoute[1]));
         return;
@@ -506,6 +555,26 @@ function createMusicServer(services) {
             cacheKey: `playback:${stableSerialize(body)}`,
             requestSignal: requestAbort.signal,
             execute: () => services.resolvePlayback(body)
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
+      if (request.method === 'POST' && pathname === '/api/recommendations') {
+        const body = await readBody(request);
+        const requestAbort = createRequestAbortController(
+          request,
+          'Recommendation request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `recommendations:${stableSerialize(body)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.getRecommendations(body, { signal: requestAbort.signal })
           });
           sendJson(response, 200, result);
         } finally {

@@ -284,6 +284,7 @@ General notes:
 - library rescans batch catalog writes instead of persisting each discovered file individually
 - MusicBrainz-backed artist requests are throttled and cached because MusicBrainz documents a 1 request/second rate limit
 - multi-provider search favors fast cold responses; slower providers may time out in `provider=all` so the API can return under budget
+- artist search results are enriched with Deezer artwork and top releases when possible to reduce client follow-up calls
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
@@ -539,6 +540,10 @@ Response example:
 }
 ```
 
+Notes:
+
+- Apollo enriches artist results with artwork, Deezer IDs, and a few top releases when a Deezer match is available
+
 ### `GET /api/artists/:artistId`
 
 Returns a MusicBrainz artist profile with aliases, genres, and a trimmed set of external links.
@@ -555,6 +560,15 @@ Response items include:
 - `secondaryTypes`
 - `firstReleaseDate`
 
+### `GET /api/releases/:releaseId/tracks`
+
+Returns a release tracklist for a MusicBrainz release-group ID.
+
+Behavior:
+
+- Apollo resolves the release group to the best release available
+- the response includes track order, release metadata, and Apollo-compatible `downloadTarget` values
+
 ### `GET /api/artists/:artistId/tracks`
 
 Returns a practical artist song list without API keys.
@@ -564,6 +578,43 @@ Behavior:
 - prefers iTunes song metadata for cleaner artist-track results
 - falls back to MusicBrainz recordings if iTunes has no usable tracks
 - each track still includes a `downloadTarget` that Apollo can resolve through YouTube for playback/download
+
+### `POST /api/recommendations`
+
+Returns related playable tracks from no-key metadata sources.
+
+Request body:
+
+```json
+{
+  "title": "One More Time",
+  "artist": "Daft Punk",
+  "album": "Discovery",
+  "limit": 5
+}
+```
+
+Or seed from a downloaded Apollo track:
+
+```json
+{
+  "trackId": "track-id",
+  "limit": 5
+}
+```
+
+Notes:
+
+- recommendations prefer local library matches, Deezer artist top tracks, and iTunes artist tracks
+- responses include provider IDs, artwork, duration, and stable IDs so clients can dedupe cleanly
+
+### `GET /api/tracks/:trackId/related`
+
+Convenience wrapper around recommendations for a downloaded Apollo track.
+
+Query params:
+
+- `limit`: optional, default `12`
 
 ### `POST /api/playback`
 

@@ -14,8 +14,10 @@ const {
   searchArtists,
   getArtistProfile,
   listArtistReleases,
-  listArtistTracks
+  listArtistTracks,
+  listReleaseTracks
 } = require('./public-metadata-service');
+const { getRecommendations } = require('./recommendation-service');
 const { createHttpError } = require('./http-error');
 const { formatApiTrack, formatApiPlaylist, resolvePlaylistArtworkUrl } = require('./models');
 const { DownloadService } = require('./download-service');
@@ -210,7 +212,20 @@ async function createRuntime({
     listArtistReleases: (artistId, payload, options = {}) =>
       listArtistReleases(artistId, { ...payload, ...options }),
     listArtistTracks: (artistId, payload, options = {}) =>
-      listArtistTracks(artistId, { ...payload, ...options })
+      listArtistTracks(artistId, { ...payload, ...options }),
+    listReleaseTracks: (releaseId, options = {}) => listReleaseTracks(releaseId, options),
+    getRecommendations: (payload, options = {}) =>
+      getRecommendations(payload, store, musicServer.getInfo().baseUrl, options),
+    getRelatedTracks: (trackId, payload = {}, options = {}) =>
+      getRecommendations(
+        {
+          ...payload,
+          trackId
+        },
+        store,
+        musicServer.getInfo().baseUrl,
+        options
+      )
   });
 
   downloadService.on('updated', (download) => {
@@ -304,7 +319,20 @@ async function createRuntime({
     listArtistReleases: (artistId, payload, options = {}) =>
       listArtistReleases(artistId, { ...payload, ...options }),
     listArtistTracks: (artistId, payload, options = {}) =>
-      listArtistTracks(artistId, { ...payload, ...options })
+      listArtistTracks(artistId, { ...payload, ...options }),
+    listReleaseTracks: (releaseId, options = {}) => listReleaseTracks(releaseId, options),
+    getRecommendations: (payload, options = {}) =>
+      getRecommendations(payload, store, musicServer.getInfo().baseUrl, options),
+    getRelatedTracks: (trackId, payload = {}, options = {}) =>
+      getRecommendations(
+        {
+          ...payload,
+          trackId
+        },
+        store,
+        musicServer.getInfo().baseUrl,
+        options
+      )
   };
 }
 
