@@ -1,7 +1,7 @@
 const path = require('path');
 const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
-const PROVIDER_ID_KEYS = ['spotify', 'youtube', 'soundcloud', 'isrc'];
+const PROVIDER_ID_KEYS = ['spotify', 'youtube', 'soundcloud', 'itunes', 'isrc'];
 
 function createEmptyProviderIds(overrides = {}) {
   const providerIds = {};

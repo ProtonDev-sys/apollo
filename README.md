@@ -19,6 +19,7 @@ Apollo is the server-side app for a personal music system. It ships with:
 - Node.js 20+
 - `yt-dlp`
 - `ffmpeg`
+- no-key MusicBrainz and iTunes metadata are built in
 - optional Spotify API credentials for Spotify metadata search
 
 ## Install and first setup
@@ -255,6 +256,7 @@ General notes:
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - Apollo reuses in-flight work for identical expensive requests and keeps a short in-memory cache for recent search, playback, download-resolution, and inspect-link responses
 - library rescans batch catalog writes instead of persisting each discovered file individually
+- MusicBrainz-backed artist requests are throttled and cached because MusicBrainz documents a 1 request/second rate limit
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
@@ -402,7 +404,7 @@ Query params:
 
 - `query` or `q`: search term
 - `scope`: `all`, `library`, or `remote`
-- `provider`: `all`, `youtube`, `soundcloud`, or `spotify`
+- `provider`: `all`, `youtube`, `soundcloud`, `spotify`, or `itunes`
 - `clientId`: optional fallback for client identification if you cannot send `X-Client-Id`
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
@@ -464,9 +466,75 @@ Notes:
 - different `X-Client-Id` values are isolated, so one client does not cancel another client's search
 - Apollo keeps a short in-memory cache of recent identical searches to avoid repeating provider work
 - duplicate remote results from fallback/provider overlap are collapsed into a single best result
+- `itunes` is the built-in no-key metadata provider for general song search
 - Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
 - if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
-- `provider=all` includes `spotify`, `youtube`, and `soundcloud`
+- `provider=all` includes `spotify`, `youtube`, `soundcloud`, and `itunes`
+
+### `GET /api/artists`
+
+Searches artists using MusicBrainz. This does not require API keys.
+
+Query params:
+
+- `query` or `q`: artist name
+- `page`: optional, default `1`
+- `pageSize`: optional, default `20`
+
+Response example:
+
+```json
+{
+  "items": [
+    {
+      "id": "056e4f3e-d505-4dad-8ec1-d04f521cbb56",
+      "name": "Daft Punk",
+      "sortName": "Daft Punk",
+      "type": "Group",
+      "country": "FR",
+      "area": "France",
+      "disambiguation": "French electronic duo",
+      "lifeSpan": {
+        "begin": "1993",
+        "end": "2021-02-22",
+        "ended": true
+      },
+      "tags": ["electronic", "house"],
+      "source": "musicbrainz"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "pageSize": 20,
+  "totalPages": 1
+}
+```
+
+### `GET /api/artists/:artistId`
+
+Returns a MusicBrainz artist profile with aliases, genres, and a trimmed set of external links.
+
+### `GET /api/artists/:artistId/releases`
+
+Returns release groups for the artist from MusicBrainz.
+
+Response items include:
+
+- `id`
+- `title`
+- `primaryType`
+- `secondaryTypes`
+- `firstReleaseDate`
+
+### `GET /api/artists/:artistId/tracks`
+
+Returns a practical artist song list without API keys.
+
+Behavior:
+
+- prefers iTunes song metadata for cleaner artist-track results
+- falls back to MusicBrainz recordings if iTunes has no usable tracks
+- each track still includes a `downloadTarget` that Apollo can resolve through YouTube for playback/download
 
 ### `POST /api/playback`
 

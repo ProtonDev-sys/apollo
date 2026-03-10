@@ -2,10 +2,11 @@ const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
 const { createHttpError, isAbortError } = require('./http-error');
 const { isTrackEquivalent } = require('./data-store');
+const { searchItunesTracks } = require('./public-metadata-service');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
 const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
-const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud'];
+const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud', 'itunes'];
 const NON_SONG_VIDEO_PATTERN =
   /\b(lyrics?|official video|video clip|reaction|karaoke|cover|live|sped up|slowed|nightcore|fanmade|fan-made)\b/i;
 const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
@@ -278,6 +279,10 @@ function resolveProviderName(entry, fallbackProvider = 'link') {
     return 'soundcloud';
   }
 
+  if (extractor.includes('itunes') || extractor.includes('apple')) {
+    return 'itunes';
+  }
+
   if (extractor.includes('spotify')) {
     return 'spotify';
   }
@@ -394,6 +399,8 @@ function scoreRemoteResult(item) {
 
   if (item.provider === 'spotify') {
     score += 50;
+  } else if (item.provider === 'itunes') {
+    score += 35;
   } else if (item.provider === 'youtube') {
     score += 20;
   } else if (item.provider === 'soundcloud') {
@@ -406,6 +413,8 @@ function scoreRemoteResult(item) {
 
   if (item.metadataSource === 'spotify' || item.metadataSource === 'spotify-page') {
     score += 25;
+  } else if (item.metadataSource === 'itunes') {
+    score += 15;
   }
 
   if (item.artwork) {
@@ -515,6 +524,15 @@ async function searchProviders(
     providers.map((selectedProvider) => {
       if (selectedProvider === 'spotify') {
         return searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
+      }
+
+      if (selectedProvider === 'itunes') {
+        return searchItunesTracks({
+          query: trimmedQuery,
+          page: safePage,
+          pageSize: safePageSize,
+          signal
+        });
       }
 
       return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);

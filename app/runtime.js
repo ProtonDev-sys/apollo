@@ -10,6 +10,12 @@ const {
   resolvePlayback,
   resolveClientDownload
 } = require('./search-service');
+const {
+  searchArtists,
+  getArtistProfile,
+  listArtistReleases,
+  listArtistTracks
+} = require('./public-metadata-service');
 const { createHttpError } = require('./http-error');
 const { formatApiTrack, formatApiPlaylist, resolvePlaylistArtworkUrl } = require('./models');
 const { DownloadService } = require('./download-service');
@@ -198,7 +204,13 @@ async function createRuntime({
     listDownloads: () => downloadService.getDownloads(),
     getDownload: (downloadId) => store.getDownload(downloadId),
     queueDownload: (payload) => downloadService.queueDownload(payload),
-    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory))
+    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory)),
+    searchArtists: (payload, options = {}) => searchArtists({ ...payload, ...options }),
+    getArtist: (artistId, options = {}) => getArtistProfile(artistId, options),
+    listArtistReleases: (artistId, payload, options = {}) =>
+      listArtistReleases(artistId, { ...payload, ...options }),
+    listArtistTracks: (artistId, payload, options = {}) =>
+      listArtistTracks(artistId, { ...payload, ...options })
   });
 
   downloadService.on('updated', (download) => {
@@ -286,7 +298,13 @@ async function createRuntime({
     deletePlaylistArtwork,
     getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
     getDownload: (downloadId) => store.getDownload(downloadId),
-    getServerInfo: () => musicServer.getInfo()
+    getServerInfo: () => musicServer.getInfo(),
+    searchArtists: (payload, options = {}) => searchArtists({ ...payload, ...options }),
+    getArtist: (artistId, options = {}) => getArtistProfile(artistId, options),
+    listArtistReleases: (artistId, payload, options = {}) =>
+      listArtistReleases(artistId, { ...payload, ...options }),
+    listArtistTracks: (artistId, payload, options = {}) =>
+      listArtistTracks(artistId, { ...payload, ...options })
   };
 }
 

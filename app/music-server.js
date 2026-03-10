@@ -356,6 +356,104 @@ function createMusicServer(services) {
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/api/artists') {
+        const payload = {
+          query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || '',
+          page: requestUrl.searchParams.get('page') || '1',
+          pageSize: requestUrl.searchParams.get('pageSize') || '20'
+        };
+        const requestAbort = createRequestAbortController(
+          request,
+          'Artist search request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `artist-search:${stableSerialize(payload)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.searchArtists(payload, { signal: requestAbort.signal })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
+      const artistTracksRoute = pathname.match(/^\/api\/artists\/([^/]+)\/tracks$/);
+      if (request.method === 'GET' && artistTracksRoute) {
+        const payload = {
+          page: requestUrl.searchParams.get('page') || '1',
+          pageSize: requestUrl.searchParams.get('pageSize') || '25'
+        };
+        const requestAbort = createRequestAbortController(
+          request,
+          'Artist track request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `artist-tracks:${artistTracksRoute[1]}:${stableSerialize(payload)}`,
+            requestSignal: requestAbort.signal,
+            execute: () =>
+              services.listArtistTracks(artistTracksRoute[1], payload, {
+                signal: requestAbort.signal
+              })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
+      const artistReleasesRoute = pathname.match(/^\/api\/artists\/([^/]+)\/releases$/);
+      if (request.method === 'GET' && artistReleasesRoute) {
+        const payload = {
+          page: requestUrl.searchParams.get('page') || '1',
+          pageSize: requestUrl.searchParams.get('pageSize') || '20'
+        };
+        const requestAbort = createRequestAbortController(
+          request,
+          'Artist releases request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `artist-releases:${artistReleasesRoute[1]}:${stableSerialize(payload)}`,
+            requestSignal: requestAbort.signal,
+            execute: () =>
+              services.listArtistReleases(artistReleasesRoute[1], payload, {
+                signal: requestAbort.signal
+              })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
+      const artistRoute = pathname.match(/^\/api\/artists\/([^/]+)$/);
+      if (request.method === 'GET' && artistRoute) {
+        const requestAbort = createRequestAbortController(
+          request,
+          'Artist profile request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `artist:${artistRoute[1]}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.getArtist(artistRoute[1], { signal: requestAbort.signal })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       const trackRoute = pathname.match(/^\/api\/tracks\/([^/]+)$/);
       if (request.method === 'DELETE' && trackRoute) {
         sendJson(response, 200, await services.deleteTrack(trackRoute[1]));
