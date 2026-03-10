@@ -253,6 +253,7 @@ General notes:
 - when API auth is enabled, send `Authorization: Bearer <token>` on all API requests after login
 - send `X-Client-Id: <stable-client-id>` on search requests so Apollo can cancel older in-flight searches from the same client without affecting other clients
 - CORS is enabled with `Access-Control-Allow-Origin: *`
+- Apollo reuses in-flight work for identical expensive requests and keeps a short in-memory cache for recent search, playback, download-resolution, and inspect-link responses
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
@@ -516,6 +517,11 @@ Response for a remote result:
 }
 ```
 
+Notes:
+
+- identical concurrent playback-resolution requests share one upstream lookup
+- recent identical playback-resolution requests are served from a short in-memory cache
+
 ### Download APIs
 
 Apollo has two download endpoints:
@@ -629,6 +635,11 @@ Response example:
 }
 ```
 
+Notes:
+
+- identical concurrent client-download resolution requests share one upstream lookup
+- recent identical client-download resolution requests are served from a short in-memory cache
+
 ### `POST /api/inspect-link`
 
 Inspects a direct media URL and returns a normalized item that can be used for playback or download.
@@ -662,6 +673,11 @@ Response example:
 }
 ```
 
+Notes:
+
+- identical concurrent inspect-link requests share one upstream lookup
+- recent identical inspect-link requests are served from a short in-memory cache
+
 ### `POST /api/library/rescan`
 
 Rescans the configured library directory and reindexes files.
@@ -677,6 +693,10 @@ Response example:
   "totalPages": 1
 }
 ```
+
+Notes:
+
+- if several rescans are requested at the same time, Apollo shares one in-flight rescan instead of starting multiple scans
 
 ### `GET /api/playlists`
 
@@ -756,6 +776,7 @@ Streams a downloaded library file from Apollo.
 Notes:
 
 - supports `Range` requests for media playback
+- long-lived audio streams are kept open without the normal HTTP request timeout
 - add `?download=1` to force a file download
 - `trackId` is the ID of a downloaded library track
 - only works for downloaded library tracks, not remote provider items

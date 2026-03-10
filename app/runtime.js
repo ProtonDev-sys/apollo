@@ -168,11 +168,17 @@ async function createRuntime({
       libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
     searchCatalog: (payload, options = {}) =>
       searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
-    resolvePlayback: (payload) =>
-      resolvePlayback(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
-    resolveClientDownload: (payload) =>
-      resolveClientDownload(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
-    inspectLink: (url) => inspectDirectLink(url, store.getSettings()),
+    resolvePlayback: (payload, options = {}) =>
+      resolvePlayback(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
+    resolveClientDownload: (payload, options = {}) =>
+      resolveClientDownload(
+        payload,
+        store.getSettings(),
+        store,
+        musicServer.getInfo().baseUrl,
+        options
+      ),
+    inspectLink: (url, options = {}) => inspectDirectLink(url, store.getSettings(), options),
     listPlaylists: () => store.listPlaylists().map((playlist) => formatPlaylist(playlist)),
     getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
     createPlaylist: async (payload) => formatPlaylist(await store.createPlaylist(payload)),
@@ -262,7 +268,7 @@ async function createRuntime({
     getConfigPath: () => store.getConfigPath(),
     openLibraryPath: () => store.getSettings().libraryDirectory,
     search: (payload) => searchProviders(payload, store.getSettings()),
-    inspectLink: (url) => inspectDirectLink(url, store.getSettings()),
+    inspectLink: (url, options = {}) => inspectDirectLink(url, store.getSettings(), options),
     queueDownload: (payload) => downloadService.queueDownload(payload),
     listTracks: (payload) => formatTrackList(store.listTracks(payload)),
     deleteTrack: (trackId) => libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),

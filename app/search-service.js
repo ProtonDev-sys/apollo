@@ -81,8 +81,8 @@ async function fetchSpotifyToken(settings, signal) {
   return payload.access_token;
 }
 
-async function fetchSpotifyTrackPageMetadata(url) {
-  const response = await fetch(url);
+async function fetchSpotifyTrackPageMetadata(url, signal) {
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`Spotify page request failed with status ${response.status}.`);
   }
@@ -168,7 +168,7 @@ function formatSpotifyTrack(item) {
 
 async function searchSpotify(query, page, pageSize, settings, signal) {
   if (isSpotifyTrackUrl(query)) {
-    const item = await fetchSpotifyTrackPageMetadata(query.trim());
+    const item = await fetchSpotifyTrackPageMetadata(query.trim(), signal);
     return {
       items: [item],
       total: 1,
@@ -523,14 +523,14 @@ async function searchProviders(
   };
 }
 
-async function inspectDirectLink(url, settings) {
+async function inspectDirectLink(url, settings, { signal } = {}) {
   const trimmedUrl = url.trim();
   if (!trimmedUrl) {
     throw new Error('Enter a direct media link.');
   }
 
   if (isSpotifyTrackUrl(trimmedUrl)) {
-    return fetchSpotifyTrackPageMetadata(trimmedUrl);
+    return fetchSpotifyTrackPageMetadata(trimmedUrl, signal);
   }
 
   const ytDlpPath = await resolveExecutablePath(
@@ -541,7 +541,7 @@ async function inspectDirectLink(url, settings) {
     '--dump-single-json',
     '--no-warnings',
     trimmedUrl
-  ]);
+  ], { signal });
   const payload = JSON.parse(stdout);
   const metadata = extractResolvedMetadata(payload, payload.extractor_key?.toLowerCase() || 'link');
 
@@ -604,7 +604,7 @@ async function searchCatalog(payload, settings, store, baseUrl, { signal } = {})
   };
 }
 
-async function resolveRemoteMedia(input, settings) {
+async function resolveRemoteMedia(input, settings, { signal } = {}) {
   const spotifySearchTarget =
     input.provider === 'spotify' &&
     isSpotifyTrackUrl(input.downloadTarget || input.externalUrl || input.url)
@@ -624,7 +624,7 @@ async function resolveRemoteMedia(input, settings) {
     '--format',
     'bestaudio/best',
     target
-  ]);
+  ], { signal });
   const directUrl = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -704,7 +704,7 @@ async function resolveDownloadMetadata(input, settings) {
   };
 }
 
-async function resolvePlayback(input, settings, store, baseUrl) {
+async function resolvePlayback(input, settings, store, baseUrl, { signal } = {}) {
   if (input.trackId) {
     const track = store.getTrack(input.trackId);
     if (!track) {
@@ -721,7 +721,7 @@ async function resolvePlayback(input, settings, store, baseUrl) {
     };
   }
 
-  const resolved = await resolveRemoteMedia(input, settings);
+  const resolved = await resolveRemoteMedia(input, settings, { signal });
   return {
     type: 'remote',
     streamUrl: resolved.directUrl,
@@ -733,7 +733,7 @@ async function resolvePlayback(input, settings, store, baseUrl) {
   };
 }
 
-async function resolveClientDownload(input, settings, store, baseUrl) {
+async function resolveClientDownload(input, settings, store, baseUrl, { signal } = {}) {
   if (input.trackId) {
     const track = store.getTrack(input.trackId);
     if (!track) {
@@ -749,7 +749,7 @@ async function resolveClientDownload(input, settings, store, baseUrl) {
     };
   }
 
-  const resolved = await resolveRemoteMedia(input, settings);
+  const resolved = await resolveRemoteMedia(input, settings, { signal });
   return {
     type: 'remote',
     downloadUrl: resolved.directUrl,

@@ -1,8 +1,10 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { pipeline } = require('stream');
 const { URL } = require('url');
 const { createAbortError, createHttpError, isAbortError } = require('./http-error');
+const { RequestCoordinator } = require('./request-coordinator');
 const { SearchCoordinator } = require('./search-coordinator');
 
 const MIME_TYPES = {
@@ -18,6 +20,21 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.webp': 'image/webp'
 };
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+  }
+
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(',')}}`;
+  }
+
+  return JSON.stringify(value);
+}
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -53,6 +70,26 @@ function sendNoContent(response) {
 
 function notFound(response) {
   sendJson(response, 404, { error: 'Not found.' });
+}
+
+function createRequestAbortController(request, message = 'Request was closed by the client.') {
+  const controller = new AbortController();
+  const abortRequest = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(createAbortError(message, 499));
+    }
+  };
+
+  request.once('aborted', abortRequest);
+  request.once('close', abortRequest);
+
+  return {
+    signal: controller.signal,
+    detach() {
+      request.off('aborted', abortRequest);
+      request.off('close', abortRequest);
+    }
+  };
 }
 
 async function readBufferBody(request) {
@@ -132,7 +169,27 @@ async function readMultipartArtwork(request) {
   throw createHttpError(400, 'No artwork file was provided.');
 }
 
-function serveStaticFile(response, filePath) {
+function pipeFileStream(request, response, filePath, headers = {}) {
+  const fileStream = fs.createReadStream(filePath, headers.range || {});
+  const destroyStream = () => {
+    fileStream.destroy();
+  };
+
+  request.once('close', destroyStream);
+  response.once('close', destroyStream);
+  fileStream.once('error', () => {
+    if (!isResponseClosed(response)) {
+      response.destroy();
+    }
+  });
+
+  pipeline(fileStream, response, () => {
+    request.off('close', destroyStream);
+    response.off('close', destroyStream);
+  });
+}
+
+function serveStaticFile(request, response, filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
     notFound(response);
     return;
@@ -145,9 +202,10 @@ function serveStaticFile(response, filePath) {
   setCorsHeaders(response);
   response.writeHead(200, {
     'Content-Type': contentType,
-    'Content-Length': stat.size
+    'Content-Length': stat.size,
+    'Cache-Control': 'public, max-age=60'
   });
-  fs.createReadStream(filePath).pipe(response);
+  pipeFileStream(request, response, filePath);
 }
 
 function streamTrack(request, response, track, requestUrl) {
@@ -173,9 +231,10 @@ function streamTrack(request, response, track, requestUrl) {
 
   if (!range) {
     response.writeHead(200, {
-      'Content-Length': stat.size
+      'Content-Length': stat.size,
+      'Cache-Control': 'no-store'
     });
-    fs.createReadStream(track.filePath).pipe(response);
+    pipeFileStream(request, response, track.filePath);
     return;
   }
 
@@ -193,9 +252,12 @@ function streamTrack(request, response, track, requestUrl) {
 
   response.writeHead(206, {
     'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-    'Content-Length': end - start + 1
+    'Content-Length': end - start + 1,
+    'Cache-Control': 'no-store'
   });
-  fs.createReadStream(track.filePath, { start, end }).pipe(response);
+  pipeFileStream(request, response, track.filePath, {
+    range: { start, end }
+  });
 }
 
 function extractAccessToken(request, requestUrl) {
@@ -217,6 +279,11 @@ function isPublicRoute(request, pathname) {
 function createMusicServer(services) {
   let server = null;
   const searchCoordinator = new SearchCoordinator();
+  const requestCoordinator = new RequestCoordinator({
+    cacheTtlMs: 10000,
+    maxCacheEntries: 200
+  });
+  const rescanCoordinator = new RequestCoordinator();
   let serverInfo = {
     running: false,
     host: '',
@@ -259,7 +326,11 @@ function createMusicServer(services) {
 
       const playlistArtworkMatch = pathname.match(/^\/media\/playlists\/([^/]+)$/);
       if (request.method === 'GET' && playlistArtworkMatch) {
-        serveStaticFile(response, services.getPlaylistArtworkPath(decodeURIComponent(playlistArtworkMatch[1])));
+        serveStaticFile(
+          request,
+          response,
+          services.getPlaylistArtworkPath(decodeURIComponent(playlistArtworkMatch[1]))
+        );
         return;
       }
 
@@ -304,28 +375,22 @@ function createMusicServer(services) {
           requestUrl,
           accessToken
         });
-        const requestController = new AbortController();
-        const cancelSearch = () => {
-          if (!requestController.signal.aborted) {
-            requestController.abort(createAbortError('Search request was closed by the client.', 499));
-          }
-        };
-
-        request.once('aborted', cancelSearch);
-        request.once('close', cancelSearch);
+        const requestAbort = createRequestAbortController(
+          request,
+          'Search request was closed by the client.'
+        );
 
         try {
           const result = await searchCoordinator.runSearch({
             clientKey,
             cacheKey: searchCoordinator.createCacheKey(payload),
-            requestSignal: requestController.signal,
+            requestSignal: requestAbort.signal,
             execute: ({ signal }) => services.searchCatalog(payload, { signal })
           });
 
           sendJson(response, 200, result);
         } finally {
-          request.off('aborted', cancelSearch);
-          request.off('close', cancelSearch);
+          requestAbort.detach();
         }
 
         return;
@@ -333,7 +398,21 @@ function createMusicServer(services) {
 
       if (request.method === 'POST' && pathname === '/api/playback') {
         const body = await readBody(request);
-        sendJson(response, 200, await services.resolvePlayback(body));
+        const requestAbort = createRequestAbortController(
+          request,
+          'Playback resolution request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `playback:${stableSerialize(body)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.resolvePlayback(body)
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
         return;
       }
 
@@ -421,13 +500,41 @@ function createMusicServer(services) {
 
       if (request.method === 'POST' && pathname === '/api/downloads/client') {
         const body = await readBody(request);
-        sendJson(response, 200, await services.resolveClientDownload(body));
+        const requestAbort = createRequestAbortController(
+          request,
+          'Client download resolution request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `client-download:${stableSerialize(body)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.resolveClientDownload(body)
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
         return;
       }
 
       if (request.method === 'POST' && pathname === '/api/inspect-link') {
         const body = await readBody(request);
-        sendJson(response, 200, await services.inspectLink(body.url || ''));
+        const requestAbort = createRequestAbortController(
+          request,
+          'Link inspection request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `inspect-link:${stableSerialize({ url: body.url || '' })}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.inspectLink(body.url || '')
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
         return;
       }
 
@@ -438,7 +545,21 @@ function createMusicServer(services) {
       }
 
       if (request.method === 'POST' && pathname === '/api/library/rescan') {
-        sendJson(response, 200, await services.rescanLibrary());
+        const requestAbort = createRequestAbortController(
+          request,
+          'Library rescan request was closed by the client.'
+        );
+
+        try {
+          const result = await rescanCoordinator.run({
+            cacheKey: 'library:rescan',
+            requestSignal: requestAbort.signal,
+            execute: () => services.rescanLibrary()
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
         return;
       }
 
@@ -469,6 +590,9 @@ function createMusicServer(services) {
       server = http.createServer((request, response) => {
         void handleRequest(request, response);
       });
+      server.keepAliveTimeout = 60000;
+      server.headersTimeout = 65000;
+      server.requestTimeout = 0;
 
       server.on('error', reject);
       server.listen(Number.parseInt(port, 10), host, () => {
