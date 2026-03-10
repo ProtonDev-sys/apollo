@@ -1,12 +1,12 @@
 # Apollo
 
-Apollo is the server-side app for a personal music system. It ships with:
+Apollo is a local music server for personal client apps. It ships with:
 
 - a minimal Electron config UI
 - a headless CLI that runs the same server stack
 - a shared config file used by both UI and CLI
 
-## What it does
+## Highlights
 
 - starts a local HTTP API for tracks, playlists, downloads, and streaming
 - manages a persistent library catalog and playlist data
@@ -22,7 +22,33 @@ Apollo is the server-side app for a personal music system. It ships with:
 - no-key MusicBrainz and iTunes metadata are built in
 - optional Spotify API credentials for Spotify metadata search
 
-## Install and first setup
+## Quick start
+
+Install the dependencies, install the project packages, then start Apollo:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+winget install yt-dlp.yt-dlp
+winget install Gyan.FFmpeg.Essentials
+npm.cmd install
+npm.cmd start
+```
+
+Default local API:
+
+```text
+http://127.0.0.1:4848
+```
+
+## Metadata providers
+
+- `MusicBrainz`: no-key artist identity, artist profile data, and release groups
+- `iTunes`: no-key general song metadata and default artist track listings
+- `YouTube`: search, playback resolution, and download fallback
+- `SoundCloud`: search, playback resolution, and download fallback
+- `Spotify`: optional metadata source when credentials work, plus direct Spotify track URL handling
+
+## Setup
 
 ### 1. Install Node.js
 
@@ -203,7 +229,6 @@ Notes:
 ## Run the UI
 
 ```powershell
-npm.cmd install
 npm.cmd start
 ```
 
