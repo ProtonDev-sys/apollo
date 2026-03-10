@@ -1,13 +1,13 @@
 :root {
   color-scheme: dark;
-  --bg: #0d1117;
-  --panel: #161b22;
-  --panel-alt: #1c2128;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #9da7b3;
-  --accent: #2f81f7;
-  --accent-strong: #1f6feb;
+  --bg: #120714;
+  --panel: #1b0d20;
+  --panel-alt: #25132b;
+  --border: #59305f;
+  --text: #f7ecf8;
+  --muted: #cba7d0;
+  --accent: #dc55dc;
+  --accent-strong: #bf42bf;
   --success: #238636;
   --warning: #d29922;
   --radius: 14px;
@@ -21,7 +21,9 @@ html,
 body {
   margin: 0;
   min-height: 100%;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top, rgba(220, 85, 220, 0.18), transparent 34%),
+    var(--bg);
   color: var(--text);
   font-family: "Segoe UI", "SF Pro Text", sans-serif;
 }
@@ -136,6 +138,7 @@ input {
 
 input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(220, 85, 220, 0.16);
 }
 
 .inline-field {
@@ -167,7 +170,7 @@ input:focus {
 }
 
 .button-ghost:hover {
-  background: #232a33;
+  background: #32193a;
 }
 
 .top-gap {
