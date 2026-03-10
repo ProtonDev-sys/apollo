@@ -251,6 +251,7 @@ General notes:
 - request and response bodies are JSON unless noted otherwise
 - set header `Content-Type: application/json` on `POST` requests
 - when API auth is enabled, send `Authorization: Bearer <token>` on all API requests after login
+- send `X-Client-Id: <stable-client-id>` on search requests so Apollo can cancel older in-flight searches from the same client without affecting other clients
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
@@ -400,6 +401,7 @@ Query params:
 - `query` or `q`: search term
 - `scope`: `all`, `library`, or `remote`
 - `provider`: `all`, `youtube`, `soundcloud`, or `spotify`
+- `clientId`: optional fallback for client identification if you cannot send `X-Client-Id`
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
 
@@ -456,6 +458,9 @@ Notes:
 
 - `library.items` contain downloaded tracks formatted for playback through Apollo
 - `remote.items` contain provider results that can be played directly or queued for download
+- if the same client sends a newer search before the previous one completes, Apollo cancels the older search and keeps the newer one
+- different `X-Client-Id` values are isolated, so one client does not cancel another client's search
+- Apollo keeps a short in-memory cache of recent identical searches to avoid repeating provider work
 - Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
 - if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
 - `provider=all` includes `spotify`, `youtube`, and `soundcloud`

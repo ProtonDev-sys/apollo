@@ -166,8 +166,8 @@ async function createRuntime({
     getTrack: (trackId) => store.getTrack(trackId),
     deleteTrack: async (trackId) =>
       libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
-    searchCatalog: (payload) =>
-      searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
+    searchCatalog: (payload, options = {}) =>
+      searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
     resolvePlayback: (payload) =>
       resolvePlayback(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
     resolveClientDownload: (payload) =>

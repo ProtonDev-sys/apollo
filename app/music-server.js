@@ -2,7 +2,8 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { URL } = require('url');
-const { createHttpError } = require('./http-error');
+const { createAbortError, createHttpError, isAbortError } = require('./http-error');
+const { SearchCoordinator } = require('./search-coordinator');
 
 const MIME_TYPES = {
   '.mp3': 'audio/mpeg',
@@ -20,11 +21,19 @@ const MIME_TYPES = {
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Id');
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
 }
 
+function isResponseClosed(response) {
+  return response.destroyed || response.writableEnded;
+}
+
 function sendJson(response, statusCode, payload) {
+  if (isResponseClosed(response)) {
+    return;
+  }
+
   setCorsHeaders(response);
   response.writeHead(statusCode, {
     'Content-Type': 'application/json'
@@ -33,6 +42,10 @@ function sendJson(response, statusCode, payload) {
 }
 
 function sendNoContent(response) {
+  if (isResponseClosed(response)) {
+    return;
+  }
+
   setCorsHeaders(response);
   response.writeHead(204);
   response.end();
@@ -203,6 +216,7 @@ function isPublicRoute(request, pathname) {
 
 function createMusicServer(services) {
   let server = null;
+  const searchCoordinator = new SearchCoordinator();
   let serverInfo = {
     running: false,
     host: '',
@@ -218,6 +232,7 @@ function createMusicServer(services) {
 
     const requestUrl = new URL(request.url, 'http://localhost');
     const pathname = requestUrl.pathname;
+    const accessToken = extractAccessToken(request, requestUrl);
 
     try {
       if (request.method === 'GET' && pathname === '/api/auth/status') {
@@ -234,8 +249,7 @@ function createMusicServer(services) {
       if (!isPublicRoute(request, pathname)) {
         const authStatus = services.getAuthStatus();
         if (authStatus.enabled) {
-          const token = extractAccessToken(request, requestUrl);
-          const session = services.authenticateRequest({ token });
+          const session = services.authenticateRequest({ token: accessToken });
           if (!session) {
             sendJson(response, 401, { error: 'Authentication required.' });
             return;
@@ -278,17 +292,42 @@ function createMusicServer(services) {
       }
 
       if (request.method === 'GET' && pathname === '/api/search') {
-        sendJson(
-          response,
-          200,
-          await services.searchCatalog({
-            query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || '',
-            provider: requestUrl.searchParams.get('provider') || 'all',
-            scope: requestUrl.searchParams.get('scope') || 'all',
-            page: requestUrl.searchParams.get('page') || '1',
-            pageSize: requestUrl.searchParams.get('pageSize') || '20'
-          })
-        );
+        const payload = {
+          query: requestUrl.searchParams.get('query') || requestUrl.searchParams.get('q') || '',
+          provider: requestUrl.searchParams.get('provider') || 'all',
+          scope: requestUrl.searchParams.get('scope') || 'all',
+          page: requestUrl.searchParams.get('page') || '1',
+          pageSize: requestUrl.searchParams.get('pageSize') || '20'
+        };
+        const clientKey = searchCoordinator.resolveClientKey({
+          request,
+          requestUrl,
+          accessToken
+        });
+        const requestController = new AbortController();
+        const cancelSearch = () => {
+          if (!requestController.signal.aborted) {
+            requestController.abort(createAbortError('Search request was closed by the client.', 499));
+          }
+        };
+
+        request.once('aborted', cancelSearch);
+        request.once('close', cancelSearch);
+
+        try {
+          const result = await searchCoordinator.runSearch({
+            clientKey,
+            cacheKey: searchCoordinator.createCacheKey(payload),
+            requestSignal: requestController.signal,
+            execute: ({ signal }) => services.searchCatalog(payload, { signal })
+          });
+
+          sendJson(response, 200, result);
+        } finally {
+          request.off('aborted', cancelSearch);
+          request.off('close', cancelSearch);
+        }
+
         return;
       }
 
@@ -411,6 +450,14 @@ function createMusicServer(services) {
 
       notFound(response);
     } catch (error) {
+      if (isAbortError(error) && isResponseClosed(response)) {
+        return;
+      }
+
+      if (isResponseClosed(response)) {
+        return;
+      }
+
       sendJson(response, error.statusCode || 500, { error: error.message });
     }
   }

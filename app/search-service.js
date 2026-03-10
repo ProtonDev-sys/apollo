@@ -1,6 +1,6 @@
 const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
-const { createHttpError } = require('./http-error');
+const { createHttpError, isAbortError } = require('./http-error');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
 const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
@@ -56,7 +56,7 @@ function parseProviderSelection(input) {
   return [...new Set(rawProviders)];
 }
 
-async function fetchSpotifyToken(settings) {
+async function fetchSpotifyToken(settings, signal) {
   const credentials = Buffer.from(
     `${settings.spotifyClientId}:${settings.spotifyClientSecret}`,
     'utf8'
@@ -68,7 +68,8 @@ async function fetchSpotifyToken(settings) {
       Authorization: `Basic ${credentials}`,
       'Content-Type': 'application/x-www-form-urlencoded'
     },
-    body: 'grant_type=client_credentials'
+    body: 'grant_type=client_credentials',
+    signal
   });
 
   if (!response.ok) {
@@ -165,7 +166,7 @@ function formatSpotifyTrack(item) {
   };
 }
 
-async function searchSpotify(query, page, pageSize, settings) {
+async function searchSpotify(query, page, pageSize, settings, signal) {
   if (isSpotifyTrackUrl(query)) {
     const item = await fetchSpotifyTrackPageMetadata(query.trim());
     return {
@@ -187,14 +188,15 @@ async function searchSpotify(query, page, pageSize, settings) {
     };
   }
 
-  const token = await fetchSpotifyToken(settings);
+  const token = await fetchSpotifyToken(settings, signal);
   const offset = (page - 1) * pageSize;
   const response = await fetch(
     `https://api.spotify.com/v1/search?type=track&limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}`,
     {
       headers: {
         Authorization: `Bearer ${token}`
-      }
+      },
+      signal
     }
   );
 
@@ -385,7 +387,7 @@ function isPreferredMusicResult(entry, provider, query) {
   return !NON_SONG_VIDEO_PATTERN.test(title);
 }
 
-async function searchViaYtDlp(query, provider, page, pageSize, settings) {
+async function searchViaYtDlp(query, provider, page, pageSize, settings, signal) {
   const ytDlpPath = await resolveExecutablePath(
     settings.ytDlpPath,
     INSTALLABLE_DEPENDENCIES.ytDlp.binaryName
@@ -397,7 +399,7 @@ async function searchViaYtDlp(query, provider, page, pageSize, settings) {
     '--dump-single-json',
     '--no-warnings',
     `${prefix}${limit}:${searchQuery}`
-  ]);
+  ], { signal });
   const payload = JSON.parse(stdout);
   const rankedEntries = (payload.entries || [])
     .map((entry) => ({
@@ -422,8 +424,8 @@ async function searchViaYtDlp(query, provider, page, pageSize, settings) {
   };
 }
 
-async function searchSpotifyFallback(query, page, pageSize, settings) {
-  const fallback = await searchViaYtDlp(query, 'youtube', page, pageSize, settings);
+async function searchSpotifyFallback(query, page, pageSize, settings, signal) {
+  const fallback = await searchViaYtDlp(query, 'youtube', page, pageSize, settings, signal);
   return {
     ...fallback,
     items: fallback.items.map((item) => ({
@@ -434,7 +436,11 @@ async function searchSpotifyFallback(query, page, pageSize, settings) {
   };
 }
 
-async function searchProviders({ query, provider = 'all', page = 1, pageSize = 8 }, settings) {
+async function searchProviders(
+  { query, provider = 'all', page = 1, pageSize = 8 },
+  settings,
+  { signal } = {}
+) {
   const trimmedQuery = query.trim();
   if (!trimmedQuery) {
     return {
@@ -454,10 +460,10 @@ async function searchProviders({ query, provider = 'all', page = 1, pageSize = 8
   const results = await Promise.allSettled(
     providers.map((selectedProvider) => {
       if (selectedProvider === 'spotify') {
-        return searchSpotify(trimmedQuery, safePage, safePageSize, settings);
+        return searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
       }
 
-      return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings);
+      return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
     })
   );
 
@@ -472,15 +478,29 @@ async function searchProviders({ query, provider = 'all', page = 1, pageSize = 8
       continue;
     }
 
+    if (isAbortError(result.reason)) {
+      throw result.reason;
+    }
+
     providerErrors[providerName] = result.reason.message;
 
     if (providerName === 'spotify') {
       try {
-        const fallback = await searchSpotifyFallback(trimmedQuery, safePage, safePageSize, settings);
+        const fallback = await searchSpotifyFallback(
+          trimmedQuery,
+          safePage,
+          safePageSize,
+          settings,
+          signal
+        );
         items.push(...fallback.items);
         warnings.push(`spotify: ${result.reason.message} Falling back to YouTube audio results.`);
         continue;
       } catch (fallbackError) {
+        if (isAbortError(fallbackError)) {
+          throw fallbackError;
+        }
+
         warnings.push(`spotify: ${result.reason.message}`);
         warnings.push(`spotify fallback: ${fallbackError.message}`);
         providerErrors.spotifyFallback = fallbackError.message;
@@ -539,7 +559,7 @@ async function inspectDirectLink(url, settings) {
   };
 }
 
-async function searchCatalog(payload, settings, store, baseUrl) {
+async function searchCatalog(payload, settings, store, baseUrl, { signal } = {}) {
   const query = payload.query || '';
   const page = Math.max(1, Number.parseInt(payload.page, 10) || 1);
   const pageSize = Math.min(20, Math.max(1, Number.parseInt(payload.pageSize, 10) || 8));
@@ -573,7 +593,7 @@ async function searchCatalog(payload, settings, store, baseUrl) {
           totalPages: 1,
           warning: ''
         }
-      : await searchProviders({ query, provider: providers, page, pageSize }, settings);
+      : await searchProviders({ query, provider: providers, page, pageSize }, settings, { signal });
 
   return {
     query,

@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { spawn } = require('child_process');
+const { createAbortError, isAbortError } = require('./http-error');
 
 const INSTALLABLE_DEPENDENCIES = {
   ytDlp: {
@@ -20,9 +21,29 @@ function runProcess(command, args, options = {}) {
       shell: false,
       ...options
     });
+    const signal = options.signal;
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+
+    function finishWithError(error) {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(error);
+    }
+
+    function finishWithSuccess(payload) {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(payload);
+    }
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -32,14 +53,26 @@ function runProcess(command, args, options = {}) {
       stderr += chunk.toString();
     });
 
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
+    child.on('error', (error) => {
+      if (signal?.aborted || isAbortError(error)) {
+        finishWithError(signal?.reason || createAbortError());
         return;
       }
 
-      reject(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code}`));
+      finishWithError(error);
+    });
+    child.on('close', (code) => {
+      if (signal?.aborted) {
+        finishWithError(signal.reason || createAbortError());
+        return;
+      }
+
+      if (code === 0) {
+        finishWithSuccess({ stdout, stderr });
+        return;
+      }
+
+      finishWithError(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code}`));
     });
   });
 }
