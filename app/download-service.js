@@ -3,7 +3,10 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { randomUUID } = require('crypto');
-const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath } = require('./binaries');
+const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
+const { createHttpError } = require('./http-error');
+const { isTrackEquivalent } = require('./data-store');
+const { resolveDownloadMetadata } = require('./search-service');
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus']);
 
@@ -32,6 +35,31 @@ async function findFirstAudioFile(rootPath) {
   return '';
 }
 
+function buildRecordFromItem(item) {
+  return {
+    id: randomUUID(),
+    title: item.title || 'Unknown Title',
+    artist: item.artist || 'Unknown Artist',
+    album: item.album || 'Singles',
+    duration: item.duration || null,
+    provider: item.provider || 'link',
+    providerIds: item.providerIds || {},
+    sourceUrl: item.externalUrl || item.downloadTarget || '',
+    status: 'queued',
+    progress: 0,
+    message: 'Waiting for worker...',
+    outputPath: '',
+    trackId: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function buildDuplicateMessage(track) {
+  const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.title || 'Track';
+  return `${label} is already in the library.`;
+}
+
 class DownloadService extends EventEmitter {
   constructor({ store, libraryService }) {
     super();
@@ -46,26 +74,90 @@ class DownloadService extends EventEmitter {
     });
   }
 
-  async queueDownload(item) {
-    const record = {
-      id: randomUUID(),
-      title: item.title || 'Unknown Title',
-      artist: item.artist || 'Unknown Artist',
-      album: item.album || 'Singles',
-      provider: item.provider || 'link',
-      sourceUrl: item.externalUrl || item.downloadTarget || '',
-      status: 'queued',
-      progress: 0,
-      message: 'Waiting for worker...',
-      outputPath: '',
-      trackId: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+  findActiveDownload(candidate) {
+    for (const download of this.downloads.values()) {
+      if (!['queued', 'running'].includes(download.status)) {
+        continue;
+      }
+
+      if (isTrackEquivalent(download, candidate)) {
+        return download;
+      }
+    }
+
+    return null;
+  }
+
+  async prepareDownloadItem(item) {
+    const settings = this.store.getSettings();
+
+    let preparedItem = {
+      ...item,
+      providerIds: item.providerIds || {}
     };
+
+    try {
+      preparedItem = await resolveDownloadMetadata(preparedItem, settings);
+    } catch (error) {
+      preparedItem = {
+        ...preparedItem,
+        providerIds: preparedItem.providerIds || {}
+      };
+    }
+
+    const existingTrack = this.store.findMatchingTrack(preparedItem);
+    if (existingTrack) {
+      throw createHttpError(409, buildDuplicateMessage(existingTrack));
+    }
+
+    const activeDownload = this.findActiveDownload(preparedItem);
+    if (activeDownload) {
+      throw createHttpError(
+        409,
+        `${activeDownload.artist} - ${activeDownload.title} is already queued for download.`
+      );
+    }
+
+    return preparedItem;
+  }
+
+  async writeAudioMetadata(sourcePath, metadata, ffmpegPath) {
+    const title = String(metadata.title || '').trim();
+    const artist = String(metadata.artist || '').trim();
+    const album = String(metadata.album || '').trim();
+    const args = ['-y', '-i', sourcePath, '-map', '0', '-codec', 'copy'];
+
+    if (title) {
+      args.push('-metadata', `title=${title}`);
+    }
+    if (artist) {
+      args.push('-metadata', `artist=${artist}`);
+    }
+    if (album) {
+      args.push('-metadata', `album=${album}`);
+    }
+
+    if (args.length === 6) {
+      return;
+    }
+
+    const tempPath = path.join(
+      path.dirname(sourcePath),
+      `${path.basename(sourcePath, path.extname(sourcePath))}.tagged${path.extname(sourcePath)}`
+    );
+
+    await runProcess(ffmpegPath, [...args, tempPath]);
+    await fs.rm(sourcePath, { force: true });
+    await fs.rename(tempPath, sourcePath);
+  }
+
+  async queueDownload(item) {
+    const preparedItem = await this.prepareDownloadItem(item);
+    const record = buildRecordFromItem(preparedItem);
 
     this.downloads.set(record.id, record);
     await this.syncRecord(record);
-    void this.processDownload(record.id, item);
+    void this.processDownload(record.id, preparedItem);
     return record;
   }
 
@@ -168,6 +260,17 @@ class DownloadService extends EventEmitter {
           record.status = 'failed';
           record.message = 'Download finished but no audio file was found.';
           await this.syncRecord(record);
+          return;
+        }
+
+        await this.writeAudioMetadata(downloadedFile, item, ffmpegPath);
+
+        const existingTrack = this.store.findMatchingTrack(item);
+        if (existingTrack) {
+          record.status = 'failed';
+          record.message = buildDuplicateMessage(existingTrack);
+          await this.syncRecord(record);
+          await fs.rm(jobDirectory, { recursive: true, force: true });
           return;
         }
 

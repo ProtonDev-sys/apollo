@@ -229,6 +229,7 @@ General notes:
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
+- track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
 
 ### `GET /api/auth/status`
 
@@ -316,11 +317,22 @@ Response example:
       "album": "Discovery",
       "duration": 224,
       "provider": "library",
-      "sourceUrl": "",
-      "filePath": "C:\\Music\\Apollo\\library\\Daft Punk\\Discovery\\Harder Better Faster Stronger.mp3",
+      "artwork": "",
+      "providerIds": {
+        "spotify": "",
+        "youtube": "",
+        "soundcloud": "",
+        "isrc": ""
+      },
+      "externalUrl": "http://127.0.0.1:4848/stream/track-id",
+      "downloadTarget": "http://127.0.0.1:4848/stream/track-id?download=1",
+      "trackId": "track-id",
       "fileName": "Harder Better Faster Stronger.mp3",
-      "addedAt": "2026-03-09T10:00:00.000Z",
-      "updatedAt": "2026-03-09T10:00:00.000Z"
+      "normalizedTitle": "harder better faster stronger",
+      "normalizedArtist": "daft punk",
+      "normalizedAlbum": "discovery",
+      "normalizedDuration": 224,
+      "metadataSource": "library"
     }
   ],
   "total": 1,
@@ -361,19 +373,31 @@ Response example:
       {
         "id": "youtube:abc123",
         "provider": "youtube",
-        "title": "Daft Punk - One More Time",
+        "title": "One More Time",
         "artist": "Daft Punk",
         "album": "YouTube",
         "duration": 321,
         "artwork": "",
         "externalUrl": "https://www.youtube.com/watch?v=abc123",
-        "downloadTarget": "https://www.youtube.com/watch?v=abc123"
+        "downloadTarget": "https://www.youtube.com/watch?v=abc123",
+        "providerIds": {
+          "spotify": "",
+          "youtube": "abc123",
+          "soundcloud": "",
+          "isrc": ""
+        },
+        "normalizedTitle": "one more time",
+        "normalizedArtist": "daft punk",
+        "normalizedAlbum": "youtube",
+        "normalizedDuration": 321,
+        "metadataSource": "youtube"
       }
     ],
     "total": 1,
     "page": 1,
     "pageSize": 10,
     "totalPages": 1,
+    "providerErrors": {},
     "warning": ""
   }
 }
@@ -383,7 +407,9 @@ Notes:
 
 - `library.items` contain downloaded tracks formatted for playback through Apollo
 - `remote.items` contain provider results that can be played directly or queued for download
-- Spotify results require `spotifyClientId` and `spotifyClientSecret` in config
+- Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
+- if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
+- `provider=all` includes `spotify`, `youtube`, and `soundcloud`
 
 ### `POST /api/playback`
 
@@ -487,6 +513,11 @@ Statuses:
 - `completed`
 - `failed`
 
+Notes:
+
+- Apollo rejects duplicate downloads when the same track is already in the library or already queued
+- downloaded files are tagged with the resolved title, artist, and album metadata before import
+
 ### `GET /api/downloads`
 
 Lists download jobs, newest first.
@@ -568,7 +599,12 @@ Response example:
   "duration": 321,
   "artwork": "",
   "externalUrl": "https://www.youtube.com/watch?v=abc123",
-  "downloadTarget": "https://www.youtube.com/watch?v=abc123"
+  "downloadTarget": "https://www.youtube.com/watch?v=abc123",
+  "normalizedTitle": "one more time",
+  "normalizedArtist": "daft punk",
+  "normalizedAlbum": "singles",
+  "normalizedDuration": 321,
+  "metadataSource": "youtube"
 }
 ```
 

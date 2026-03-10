@@ -26,6 +26,94 @@ function createDefaultSettings(musicRoot) {
   };
 }
 
+const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud']);
+
+function normaliseComparableText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function normaliseComparableUrl(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/g, '')
+    .toLowerCase();
+}
+
+function hasSameProviderIdentity(leftProviderIds = {}, rightProviderIds = {}) {
+  const leftIds = normaliseProviderIds(leftProviderIds);
+  const rightIds = normaliseProviderIds(rightProviderIds);
+
+  if (leftIds.isrc && rightIds.isrc && leftIds.isrc === rightIds.isrc) {
+    return true;
+  }
+
+  return ['spotify', 'youtube', 'soundcloud'].some((key) => {
+    return leftIds[key] && rightIds[key] && leftIds[key] === rightIds[key];
+  });
+}
+
+function hasCompatibleDuration(leftDuration, rightDuration) {
+  if (!leftDuration || !rightDuration) {
+    return true;
+  }
+
+  return Math.abs(Number(leftDuration) - Number(rightDuration)) <= 5;
+}
+
+function hasSameMetadataFingerprint(left, right) {
+  const leftTitle = normaliseComparableText(left.title);
+  const rightTitle = normaliseComparableText(right.title);
+  const leftArtist = normaliseComparableText(left.artist);
+  const rightArtist = normaliseComparableText(right.artist);
+
+  if (!leftTitle || !rightTitle || !leftArtist || !rightArtist) {
+    return false;
+  }
+
+  if (leftTitle !== rightTitle || leftArtist !== rightArtist) {
+    return false;
+  }
+
+  if (!hasCompatibleDuration(left.duration, right.duration)) {
+    return false;
+  }
+
+  const leftAlbum = normaliseComparableText(left.album);
+  const rightAlbum = normaliseComparableText(right.album);
+  if (
+    leftAlbum &&
+    rightAlbum &&
+    !GENERIC_ALBUM_NAMES.has(leftAlbum) &&
+    !GENERIC_ALBUM_NAMES.has(rightAlbum) &&
+    leftAlbum !== rightAlbum
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isTrackEquivalent(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (hasSameProviderIdentity(left.providerIds, right.providerIds)) {
+    return true;
+  }
+
+  const leftSourceUrl = normaliseComparableUrl(left.sourceUrl || left.externalUrl || left.downloadTarget);
+  const rightSourceUrl = normaliseComparableUrl(right.sourceUrl || right.externalUrl || right.downloadTarget);
+  if (leftSourceUrl && rightSourceUrl && leftSourceUrl === rightSourceUrl) {
+    return true;
+  }
+
+  return hasSameMetadataFingerprint(left, right);
+}
+
 class DataStore {
   constructor({ baseDir, defaultSettings }) {
     this.baseDir = baseDir;
@@ -289,6 +377,10 @@ class DataStore {
     return this.state.tracks.find((track) => track.id === trackId) || null;
   }
 
+  findMatchingTrack(candidate) {
+    return this.state.tracks.find((track) => isTrackEquivalent(track, candidate)) || null;
+  }
+
   async upsertTrack(track) {
     const index = this.state.tracks.findIndex(
       (existing) => existing.id === track.id || existing.filePath === track.filePath
@@ -493,5 +585,6 @@ class DataStore {
 
 module.exports = {
   DataStore,
-  createDefaultSettings
+  createDefaultSettings,
+  isTrackEquivalent
 };

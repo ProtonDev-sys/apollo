@@ -1,4 +1,5 @@
 const path = require('path');
+const { normalizeTrackMetadata } = require('./metadata-normalizer');
 
 const PROVIDER_ID_KEYS = ['spotify', 'youtube', 'soundcloud', 'isrc'];
 
@@ -24,20 +25,33 @@ function formatApiTrack(track, baseUrl) {
 
   const resolvedBaseUrl = (baseUrl || '').replace(/\/$/, '');
   const streamUrl = resolvedBaseUrl ? `${resolvedBaseUrl}/stream/${track.id}` : '';
-
-  return {
-    id: track.id,
+  const normalized = normalizeTrackMetadata({
+    provider: track.provider || 'library',
     title: track.title,
     artist: track.artist,
     album: track.album,
     duration: track.duration,
+    metadataSource: track.provider || 'library'
+  });
+
+  return {
+    id: track.id,
+    title: normalized.title,
+    artist: normalized.artist,
+    album: normalized.album,
+    duration: normalized.duration,
     provider: 'library',
     artwork: track.artwork || '',
     providerIds: normaliseProviderIds(track.providerIds),
     externalUrl: streamUrl,
     downloadTarget: streamUrl ? `${streamUrl}?download=1` : '',
     trackId: track.id,
-    fileName: track.fileName || (track.filePath ? path.basename(track.filePath) : '')
+    fileName: track.fileName || (track.filePath ? path.basename(track.filePath) : ''),
+    normalizedTitle: normalized.normalizedTitle,
+    normalizedArtist: normalized.normalizedArtist,
+    normalizedAlbum: normalized.normalizedAlbum,
+    normalizedDuration: normalized.normalizedDuration,
+    metadataSource: normalized.metadataSource
   };
 }
 
