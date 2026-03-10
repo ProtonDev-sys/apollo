@@ -381,6 +381,31 @@ class DataStore {
     return this.state.tracks.find((track) => isTrackEquivalent(track, candidate)) || null;
   }
 
+  async deleteTrack(trackId) {
+    const index = this.state.tracks.findIndex((track) => track.id === trackId);
+    if (index < 0) {
+      throw createHttpError(404, 'Track not found.');
+    }
+
+    const [removedTrack] = this.state.tracks.splice(index, 1);
+
+    for (const playlist of this.state.playlists) {
+      const nextTrackIds = playlist.trackIds.filter((item) => item !== trackId);
+      if (nextTrackIds.length !== playlist.trackIds.length) {
+        playlist.trackIds = nextTrackIds;
+        playlist.updatedAt = new Date().toISOString();
+      }
+    }
+
+    await this.persist();
+
+    return {
+      ok: true,
+      id: trackId,
+      filePath: removedTrack.filePath || ''
+    };
+  }
+
   async upsertTrack(track) {
     const index = this.state.tracks.findIndex(
       (existing) => existing.id === track.id || existing.filePath === track.filePath

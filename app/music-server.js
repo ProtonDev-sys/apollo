@@ -271,6 +271,12 @@ function createMusicServer(services) {
         return;
       }
 
+      const trackRoute = pathname.match(/^\/api\/tracks\/([^/]+)$/);
+      if (request.method === 'DELETE' && trackRoute) {
+        sendJson(response, 200, await services.deleteTrack(trackRoute[1]));
+        return;
+      }
+
       if (request.method === 'GET' && pathname === '/api/search') {
         sendJson(
           response,

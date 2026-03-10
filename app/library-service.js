@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const { createHttpError } = require('./http-error');
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus']);
 
@@ -65,6 +66,24 @@ async function ensureUniquePath(targetPath) {
   }
 }
 
+async function removeEmptyParentDirectories(startDirectory, stopDirectory) {
+  const resolvedStopDirectory = path.resolve(stopDirectory);
+  let currentDirectory = path.resolve(startDirectory);
+
+  while (
+    currentDirectory.startsWith(resolvedStopDirectory) &&
+    currentDirectory !== resolvedStopDirectory
+  ) {
+    const entries = await fs.readdir(currentDirectory);
+    if (entries.length) {
+      return;
+    }
+
+    await fs.rmdir(currentDirectory);
+    currentDirectory = path.dirname(currentDirectory);
+  }
+}
+
 class LibraryService {
   constructor(store) {
     this.store = store;
@@ -109,6 +128,20 @@ class LibraryService {
       sourceUrl: metadata.sourceUrl,
       filePath: targetPath
     });
+  }
+
+  async deleteTrack(trackId, libraryDirectory) {
+    const track = this.store.getTrack(trackId);
+    if (!track) {
+      throw createHttpError(404, 'Track not found.');
+    }
+
+    if (track.filePath) {
+      await fs.rm(track.filePath, { force: true });
+      await removeEmptyParentDirectories(path.dirname(track.filePath), libraryDirectory);
+    }
+
+    return this.store.deleteTrack(trackId);
   }
 }
 

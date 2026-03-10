@@ -342,6 +342,30 @@ Response example:
 }
 ```
 
+### `DELETE /api/tracks/:trackId`
+
+Deletes a downloaded track from the Apollo library.
+
+Behavior:
+
+- removes the audio file from disk
+- removes the track from the catalog
+- removes the track from any playlists that reference it
+
+Path params:
+
+- `trackId`: Apollo track ID
+
+Response example:
+
+```json
+{
+  "ok": true,
+  "id": "track-id",
+  "filePath": "C:\\Music\\Apollo\\library\\Daft Punk\\Discovery\\One More Time.mp3"
+}
+```
+
 ### `GET /api/search`
 
 Searches both the local library and remote providers so clients can search tracks whether they are downloaded or not.

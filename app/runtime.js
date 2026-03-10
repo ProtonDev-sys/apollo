@@ -161,6 +161,8 @@ async function createRuntime({
     getOverview: () => store.getOverview(),
     listTracks: (payload) => formatTrackList(store.listTracks(payload)),
     getTrack: (trackId) => store.getTrack(trackId),
+    deleteTrack: async (trackId) =>
+      libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
     searchCatalog: (payload) =>
       searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl),
     resolvePlayback: (payload) =>
@@ -259,6 +261,7 @@ async function createRuntime({
     inspectLink: (url) => inspectDirectLink(url, store.getSettings()),
     queueDownload: (payload) => downloadService.queueDownload(payload),
     listTracks: (payload) => formatTrackList(store.listTracks(payload)),
+    deleteTrack: (trackId) => libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
     rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory)),
     listPlaylists: () => ({ items: store.listPlaylists().map((playlist) => formatPlaylist(playlist)) }),
     getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
