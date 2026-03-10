@@ -90,36 +90,18 @@ npm.cmd run config:path
 
 ### 6. Optional API authentication
 
-Apollo can lock down the API with one shared secret. There are no user accounts.
+Apollo can require one shared secret for all API, stream, and playlist artwork requests. There are no user accounts.
 
-How it works:
-
-1. The server owner creates one shared secret.
-2. A client sends that secret to Apollo one time.
-3. Apollo returns a bearer session token.
-4. The client uses that token on later API requests.
-
-This protects the API from random callers on the network, but it does not encrypt traffic by itself. If you expose Apollo outside your local machine or trusted LAN, put it behind HTTPS or a VPN.
-
-#### Recommended setup in the Electron UI
+Setup in the UI:
 
 1. Start Apollo with `npm.cmd start`
-2. In the `Config` section, set:
-   - `Require API auth`: enabled
-   - `Session TTL (hours)`: how long client tokens should stay valid
-   - `API shared secret`: a long secret phrase only you and your clients know
-3. Click `Save`
-4. Give the shared secret to the client owner through a secure channel
+2. In `Config`, enable `Require API auth`
+3. Set `Session TTL (hours)`
+4. Set `API shared secret`
+5. Click `Save`
+6. Give the shared secret to your client through a secure channel
 
-Important behavior:
-
-- leave `API shared secret` blank when editing other settings if you want to keep the current secret
-- changing the shared secret revokes all existing client sessions
-- restarting Apollo revokes all existing client sessions
-
-#### Setup directly in `config.json`
-
-If you prefer editing the shared config file yourself, use these fields:
+Or configure it in `config.json`:
 
 ```json
 {
@@ -131,41 +113,68 @@ If you prefer editing the shared config file yourself, use these fields:
 }
 ```
 
-After saving the file, restart Apollo. On first load, Apollo hashes the secret before persisting the config. You do not need to keep re-entering the plaintext secret unless you want to rotate it.
+Restart Apollo after editing the file.
 
-#### Client login flow
+Client flow:
 
-1. Check auth status:
+Clients should follow this sequence with any HTTP client.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:4848/api/auth/status
+1. Check whether auth is enabled:
+
+```http
+GET /api/auth/status HTTP/1.1
+Host: 127.0.0.1:4848
 ```
 
-2. Create a session token:
+Response example:
 
-```powershell
-$session = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://127.0.0.1:4848/api/auth/session `
-  -ContentType 'application/json' `
-  -Body '{"secret":"replace-this-with-the-shared-secret"}'
+```json
+{
+  "enabled": true,
+  "configured": true,
+  "sessionTtlHours": 168
+}
 ```
 
-3. Use the returned token:
+2. Create a session token with the shared secret:
 
-```powershell
-Invoke-RestMethod `
-  -Headers @{ Authorization = "Bearer $($session.token)" } `
-  -Uri http://127.0.0.1:4848/api/health
+```http
+POST /api/auth/session HTTP/1.1
+Host: 127.0.0.1:4848
+Content-Type: application/json
+
+{
+  "secret": "replace-this-with-the-shared-secret"
+}
 ```
 
-For browser media elements or image tags where you cannot set headers, append `?access_token=...` to `/stream/...` and `/media/...` URLs.
+Response example:
 
-#### What Apollo stores
+```json
+{
+  "token": "session-token",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-03-16T10:00:00.000Z"
+}
+```
 
+3. Send the returned token on later API requests:
+
+```http
+GET /api/health HTTP/1.1
+Host: 127.0.0.1:4848
+Authorization: Bearer session-token
+```
+
+Notes:
+
+- leave `API shared secret` blank in the UI if you want to keep the current secret
+- changing the shared secret revokes all existing sessions
+- restarting Apollo revokes all existing sessions
 - the shared secret is stored as a hash, not plaintext
 - session tokens are stored only in memory
-- session tokens expire automatically based on `apiSessionTtlHours`
+- for browser media or images, use `?access_token=...` on `/stream/...` and `/media/...` URLs if headers are not possible
+- auth does not add TLS; for anything beyond localhost or a trusted LAN, use HTTPS or a VPN
 
 ## Run the UI
 
