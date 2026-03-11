@@ -9,6 +9,10 @@ const { isTrackEquivalent } = require('./data-store');
 const { resolveDownloadMetadata } = require('./search-service');
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus']);
+const ACTIVE_DOWNLOAD_STATUSES = new Set(['queued', 'running']);
+const TERMINAL_DOWNLOAD_STATUSES = new Set(['completed', 'failed']);
+const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 2;
+const DEFAULT_PROGRESS_SYNC_INTERVAL_MS = 250;
 
 function isAudioFile(filePath) {
   return AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -61,11 +65,24 @@ function buildDuplicateMessage(track) {
 }
 
 class DownloadService extends EventEmitter {
-  constructor({ store, libraryService }) {
+  constructor({
+    store,
+    libraryService,
+    maxConcurrentDownloads = DEFAULT_MAX_CONCURRENT_DOWNLOADS,
+    progressSyncIntervalMs = DEFAULT_PROGRESS_SYNC_INTERVAL_MS
+  }) {
     super();
     this.store = store;
     this.libraryService = libraryService;
+    this.maxConcurrentDownloads = Math.max(1, Number.parseInt(maxConcurrentDownloads, 10) || 1);
+    this.progressSyncIntervalMs = Math.max(
+      50,
+      Number.parseInt(progressSyncIntervalMs, 10) || DEFAULT_PROGRESS_SYNC_INTERVAL_MS
+    );
     this.downloads = new Map(store.listDownloads().map((download) => [download.id, download]));
+    this.pendingQueue = [];
+    this.activeDownloads = new Set();
+    this.pendingSyncTimers = new Map();
   }
 
   getDownloads() {
@@ -76,7 +93,7 @@ class DownloadService extends EventEmitter {
 
   findActiveDownload(candidate) {
     for (const download of this.downloads.values()) {
-      if (!['queued', 'running'].includes(download.status)) {
+      if (!ACTIVE_DOWNLOAD_STATUSES.has(download.status)) {
         continue;
       }
 
@@ -157,8 +174,37 @@ class DownloadService extends EventEmitter {
 
     this.downloads.set(record.id, record);
     await this.syncRecord(record);
-    void this.processDownload(record.id, preparedItem);
+    this.pendingQueue.push({
+      downloadId: record.id,
+      item: preparedItem
+    });
+    void this.pumpQueue();
     return record;
+  }
+
+  queueRecordSync(record) {
+    if (TERMINAL_DOWNLOAD_STATUSES.has(record.status)) {
+      const existingTimer = this.pendingSyncTimers.get(record.id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        this.pendingSyncTimers.delete(record.id);
+      }
+
+      return this.syncRecord(record);
+    }
+
+    if (this.pendingSyncTimers.has(record.id)) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSyncTimers.delete(record.id);
+        void this.syncRecord(record).finally(resolve);
+      }, this.progressSyncIntervalMs);
+
+      this.pendingSyncTimers.set(record.id, timer);
+    });
   }
 
   async syncRecord(record) {
@@ -166,6 +212,58 @@ class DownloadService extends EventEmitter {
     this.downloads.set(record.id, { ...record });
     await this.store.upsertDownload(record);
     this.emit('updated', { ...record });
+  }
+
+  async pumpQueue() {
+    while (this.activeDownloads.size < this.maxConcurrentDownloads && this.pendingQueue.length) {
+      const nextJob = this.pendingQueue.shift();
+      if (!nextJob) {
+        return;
+      }
+
+      this.activeDownloads.add(nextJob.downloadId);
+      void this.processDownload(nextJob.downloadId, nextJob.item).finally(() => {
+        this.activeDownloads.delete(nextJob.downloadId);
+        void this.pumpQueue();
+      });
+    }
+  }
+
+  async runDownloadProcess({ ytDlpPath, args, record }) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(ytDlpPath, args, {
+        windowsHide: true,
+        shell: false
+      });
+      const progressPattern = /\[download\]\s+(\d+(?:\.\d+)?)%/i;
+
+      const handleOutput = (buffer) => {
+        const line = buffer.toString().trim();
+        if (!line) {
+          return;
+        }
+
+        const match = line.match(progressPattern);
+        if (match) {
+          record.progress = Math.min(100, Number.parseFloat(match[1]));
+        }
+
+        record.message = line;
+        void this.queueRecordSync(record);
+      };
+
+      child.stdout?.on('data', handleOutput);
+      child.stderr?.on('data', handleOutput);
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(record.message || `yt-dlp exited with code ${code}`));
+      });
+    });
   }
 
   async processDownload(downloadId, item) {
@@ -213,94 +311,62 @@ class DownloadService extends EventEmitter {
           : item.downloadTarget || item.externalUrl
       ];
 
-      const child = spawn(ytDlpPath, args, {
-        windowsHide: true,
-        shell: false
+      await this.runDownloadProcess({
+        ytDlpPath,
+        args,
+        record
       });
 
-      const progressPattern = /\[download\]\s+(\d+(?:\.\d+)?)%/i;
-      const handleOutput = async (buffer) => {
-        const line = buffer.toString().trim();
-        if (!line) {
-          return;
-        }
-
-        const match = line.match(progressPattern);
-        if (match) {
-          record.progress = Math.min(100, Number.parseFloat(match[1]));
-        }
-
-        record.message = line;
-        await this.syncRecord(record);
-      };
-
-      child.stdout?.on('data', (buffer) => {
-        void handleOutput(buffer);
-      });
-      child.stderr?.on('data', (buffer) => {
-        void handleOutput(buffer);
-      });
-
-      child.on('error', async (error) => {
+      const downloadedFile = await findFirstAudioFile(jobDirectory);
+      if (!downloadedFile) {
         record.status = 'failed';
-        record.message = error.message;
+        record.message = 'Download finished but no audio file was found.';
         await this.syncRecord(record);
-      });
+        return;
+      }
 
-      child.on('close', async (code) => {
-        if (code !== 0) {
-          record.status = 'failed';
-          record.message = record.message || `yt-dlp exited with code ${code}`;
-          await this.syncRecord(record);
-          return;
-        }
+      await this.writeAudioMetadata(downloadedFile, item, ffmpegPath);
 
-        const downloadedFile = await findFirstAudioFile(jobDirectory);
-        if (!downloadedFile) {
-          record.status = 'failed';
-          record.message = 'Download finished but no audio file was found.';
-          await this.syncRecord(record);
-          return;
-        }
-
-        await this.writeAudioMetadata(downloadedFile, item, ffmpegPath);
-
-        const existingTrack = this.store.findMatchingTrack(item);
-        if (existingTrack) {
-          record.status = 'failed';
-          record.message = buildDuplicateMessage(existingTrack);
-          await this.syncRecord(record);
-          await fs.rm(jobDirectory, { recursive: true, force: true });
-          return;
-        }
-
-        const importedTrack = await this.libraryService.importDownloadedFile(
-          downloadedFile,
-          {
-            title: item.title,
-            artist: item.artist,
-            album: item.album,
-            duration: item.duration,
-            provider: item.provider,
-            artwork: item.artwork || '',
-            providerIds: item.providerIds || {},
-            sourceUrl: item.externalUrl || item.downloadTarget || ''
-          },
-          settings.libraryDirectory
-        );
-
-        record.status = 'completed';
-        record.progress = 100;
-        record.message = 'Downloaded and indexed in the library.';
-        record.outputPath = importedTrack.filePath;
-        record.trackId = importedTrack.id;
+      const existingTrack = this.store.findMatchingTrack(item);
+      if (existingTrack) {
+        record.status = 'failed';
+        record.message = buildDuplicateMessage(existingTrack);
         await this.syncRecord(record);
-        await fs.rm(jobDirectory, { recursive: true, force: true });
-      });
+        return;
+      }
+
+      const importedTrack = await this.libraryService.importDownloadedFile(
+        downloadedFile,
+        {
+          title: item.title,
+          artist: item.artist,
+          album: item.album,
+          duration: item.duration,
+          provider: item.provider,
+          artwork: item.artwork || '',
+          providerIds: item.providerIds || {},
+          sourceUrl: item.externalUrl || item.downloadTarget || ''
+        },
+        settings.libraryDirectory
+      );
+
+      record.status = 'completed';
+      record.progress = 100;
+      record.message = 'Downloaded and indexed in the library.';
+      record.outputPath = importedTrack.filePath;
+      record.trackId = importedTrack.id;
+      await this.syncRecord(record);
     } catch (error) {
       record.status = 'failed';
       record.message = error.message;
       await this.syncRecord(record);
+    } finally {
+      const pendingTimer = this.pendingSyncTimers.get(downloadId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.pendingSyncTimers.delete(downloadId);
+      }
+
       await fs.rm(jobDirectory, { recursive: true, force: true });
     }
   }

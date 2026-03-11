@@ -13,6 +13,9 @@ const INSTALLABLE_DEPENDENCIES = {
     binaryName: 'ffmpeg'
   }
 };
+const RESOLVED_BINARY_STATE_TTL_MS = 60 * 1000;
+const resolvedBinaryStateCache = new Map();
+const resolvedBinaryStateInflight = new Map();
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -187,6 +190,24 @@ async function findWinGetBinaryCandidate(packageId, binaryName) {
 }
 
 async function getResolvedBinaryState(configuredPath, binaryName, packageId) {
+  const cacheKey = JSON.stringify({
+    configuredPath: configuredPath || '',
+    binaryName,
+    packageId
+  });
+  const cached = resolvedBinaryStateCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return {
+      ...cached.payload
+    };
+  }
+
+  const inFlight = resolvedBinaryStateInflight.get(cacheKey);
+  if (inFlight) {
+    return inFlight.then((payload) => ({ ...payload }));
+  }
+
+  const resolveState = (async () => {
   const candidates = buildBinaryCandidates(configuredPath, binaryName);
   const winGetPath = await findWinGetBinaryCandidate(packageId, binaryName);
   if (winGetPath) {
@@ -207,12 +228,37 @@ async function getResolvedBinaryState(configuredPath, binaryName, packageId) {
     lastError = result.error || lastError;
   }
 
-  return {
+  const payload = {
     available: false,
     version: '',
     path: '',
     error: lastError
   };
+
+  resolvedBinaryStateCache.set(cacheKey, {
+    payload,
+    expiresAt: Date.now() + RESOLVED_BINARY_STATE_TTL_MS
+  });
+  return payload;
+  })();
+
+  resolvedBinaryStateInflight.set(cacheKey, resolveState);
+
+  try {
+    const payload = await resolveState;
+    resolvedBinaryStateCache.set(cacheKey, {
+      payload,
+      expiresAt: Date.now() + RESOLVED_BINARY_STATE_TTL_MS
+    });
+
+    return {
+      ...payload
+    };
+  } finally {
+    if (resolvedBinaryStateInflight.get(cacheKey) === resolveState) {
+      resolvedBinaryStateInflight.delete(cacheKey);
+    }
+  }
 }
 
 async function getDependencyState(settings) {

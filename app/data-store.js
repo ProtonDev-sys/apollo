@@ -28,6 +28,12 @@ function createDefaultSettings(musicRoot) {
 }
 
 const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud']);
+const EXPLICITLY_CLEARABLE_STRING_SETTINGS = new Set([
+  'ytDlpPath',
+  'ffmpegPath',
+  'spotifyClientId',
+  'spotifyClientSecret'
+]);
 
 function normaliseComparableText(value) {
   return String(value || '')
@@ -290,10 +296,17 @@ class DataStore {
       ...this.defaultSettings,
       ...this.state.settings,
       ...Object.fromEntries(
-        Object.entries(sanitised).filter(
-          ([key, value]) =>
-            value !== '' && !['apiAuthEnabled', 'apiSessionTtlHours', 'apiSharedSecret'].includes(key)
-        )
+        Object.entries(sanitised).filter(([key, value]) => {
+          if (['apiAuthEnabled', 'apiSessionTtlHours', 'apiSharedSecret'].includes(key)) {
+            return false;
+          }
+
+          if (value !== '') {
+            return true;
+          }
+
+          return EXPLICITLY_CLEARABLE_STRING_SETTINGS.has(key);
+        })
       ),
       apiAuthEnabled: nextApiAuthEnabled,
       apiSessionTtlHours: nextApiSessionTtlHours

@@ -12,6 +12,9 @@ const NON_SONG_VIDEO_PATTERN =
 const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
 const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
 const FAST_MULTI_PROVIDER_TIMEOUT_MS = 900;
+const SPOTIFY_TOKEN_EXPIRY_SKEW_MS = 30 * 1000;
+const spotifyTokenCache = new Map();
+const spotifyTokenInflight = new Map();
 
 function createTimeoutError(message) {
   const error = new Error(message);
@@ -89,7 +92,23 @@ function parseProviderSelection(input) {
   return [...new Set(rawProviders)];
 }
 
-async function fetchSpotifyToken(settings, signal) {
+function getSpotifyTokenCacheKey(settings) {
+  return `${settings.spotifyClientId || ''}:${settings.spotifyClientSecret || ''}`;
+}
+
+async function fetchSpotifyToken(settings) {
+  const cacheKey = getSpotifyTokenCacheKey(settings);
+  const cached = spotifyTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.token;
+  }
+
+  const inFlight = spotifyTokenInflight.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const request = (async () => {
   const credentials = Buffer.from(
     `${settings.spotifyClientId}:${settings.spotifyClientSecret}`,
     'utf8'
@@ -101,8 +120,7 @@ async function fetchSpotifyToken(settings, signal) {
       Authorization: `Basic ${credentials}`,
       'Content-Type': 'application/x-www-form-urlencoded'
     },
-    body: 'grant_type=client_credentials',
-    signal
+    body: 'grant_type=client_credentials'
   });
 
   if (!response.ok) {
@@ -111,7 +129,27 @@ async function fetchSpotifyToken(settings, signal) {
   }
 
   const payload = await response.json();
+  const expiresInMs = Math.max(
+    5 * 1000,
+    Number.parseInt(payload.expires_in, 10) * 1000 - SPOTIFY_TOKEN_EXPIRY_SKEW_MS
+  );
+
+  spotifyTokenCache.set(cacheKey, {
+    token: payload.access_token,
+    expiresAt: Date.now() + expiresInMs
+  });
   return payload.access_token;
+  })();
+
+  spotifyTokenInflight.set(cacheKey, request);
+
+  try {
+    return await request;
+  } finally {
+    if (spotifyTokenInflight.get(cacheKey) === request) {
+      spotifyTokenInflight.delete(cacheKey);
+    }
+  }
 }
 
 async function fetchSpotifyTrackPageMetadata(url, signal) {
@@ -221,7 +259,7 @@ async function searchSpotify(query, page, pageSize, settings, signal) {
     };
   }
 
-  const token = await fetchSpotifyToken(settings, signal);
+  const token = await fetchSpotifyToken(settings);
   const offset = (page - 1) * pageSize;
   const response = await fetch(
     `https://api.spotify.com/v1/search?type=track&limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}`,
