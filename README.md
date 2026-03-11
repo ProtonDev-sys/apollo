@@ -11,6 +11,9 @@ Apollo is a local music server for personal client apps. It ships with:
 - starts a local HTTP API for tracks, playlists, downloads, and streaming
 - manages a persistent library catalog and playlist data
 - downloads tracks into an organised music library using `yt-dlp` and `ffmpeg`
+- normalizes and persists richer track metadata across providers and library rescans
+- repairs weak downloaded metadata on later rescans when the original source can still be resolved
+- imports playlists from supported external platforms with ordered track metadata
 - supports provider search with pagination and direct-link ingest
 - exposes stream URLs for future client apps through `/stream/:trackId`
 
@@ -48,6 +51,12 @@ http://127.0.0.1:4848
 - `YouTube`: search, playback resolution, and download fallback
 - `SoundCloud`: search, playback resolution, and download fallback
 - `Spotify`: optional metadata source when credentials work, plus direct Spotify track URL handling
+
+Playlist import providers:
+
+- `Spotify`: playlist API import when client credentials are configured
+- `Deezer`: no-key playlist API import
+- `YouTube` and `SoundCloud`: playlist import through `yt-dlp`
 
 ## Setup
 
@@ -282,12 +291,14 @@ General notes:
 - CORS is enabled with `Access-Control-Allow-Origin: *`
 - Apollo reuses in-flight work for identical expensive requests and keeps a short in-memory cache for recent search, playback, download-resolution, and inspect-link responses
 - library rescans batch catalog writes instead of persisting each discovered file individually
+- library rescans read embedded file tags and try to repair weak stored metadata from the original source when possible
 - MusicBrainz-backed artist requests are throttled and cached because MusicBrainz documents a 1 request/second rate limit
 - multi-provider search favors fast cold responses; slower providers may time out in `provider=all` so the API can return under budget
 - artist search results are enriched with Deezer artwork and top releases when possible to reduce client follow-up calls
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
+- track-like responses can also include richer metadata such as `artists`, `albumArtist`, `trackNumber`, `discNumber`, `releaseDate`, `releaseYear`, `genre`, `explicit`, `isrc`, `sourcePlatform`, and `sourceUrl`
 
 ### `GET /api/auth/status`
 
@@ -372,16 +383,29 @@ Response example:
       "id": "track-id",
       "title": "Harder Better Faster Stronger",
       "artist": "Daft Punk",
+      "artists": ["Daft Punk"],
       "album": "Discovery",
+      "albumArtist": "Daft Punk",
+      "trackNumber": 4,
+      "discNumber": 1,
       "duration": 224,
+      "releaseDate": "2001-03-07",
+      "releaseYear": 2001,
+      "genre": "French House",
+      "explicit": false,
       "provider": "library",
+      "sourcePlatform": "youtube",
       "artwork": "",
+      "sourceUrl": "https://www.youtube.com/watch?v=abc123",
       "providerIds": {
+        "deezer": "",
+        "itunes": "",
         "spotify": "",
         "youtube": "",
         "soundcloud": "",
         "isrc": ""
       },
+      "isrc": "",
       "externalUrl": "http://127.0.0.1:4848/stream/track-id",
       "downloadTarget": "http://127.0.0.1:4848/stream/track-id?download=1",
       "trackId": "track-id",
@@ -408,7 +432,8 @@ Behavior:
 
 - removes the audio file from disk
 - removes the track from the catalog
-- removes the track from any playlists that reference it
+- unlinks the track from any playlists that reference it
+- preserves imported remote playlist entries when Apollo still has stored source metadata for them
 
 Path params:
 
@@ -458,17 +483,28 @@ Response example:
         "provider": "youtube",
         "title": "One More Time",
         "artist": "Daft Punk",
+        "artists": ["Daft Punk"],
         "album": "YouTube",
+        "albumArtist": "Daft Punk",
         "duration": 321,
+        "releaseDate": "",
+        "releaseYear": null,
+        "genre": "",
+        "explicit": null,
+        "sourcePlatform": "youtube",
         "artwork": "",
         "externalUrl": "https://www.youtube.com/watch?v=abc123",
         "downloadTarget": "https://www.youtube.com/watch?v=abc123",
+        "sourceUrl": "https://www.youtube.com/watch?v=abc123",
         "providerIds": {
+          "deezer": "",
+          "itunes": "",
           "spotify": "",
           "youtube": "abc123",
           "soundcloud": "",
           "isrc": ""
         },
+        "isrc": "",
         "normalizedTitle": "one more time",
         "normalizedArtist": "daft punk",
         "normalizedAlbum": "youtube",
@@ -690,7 +726,14 @@ Request body:
   "provider": "youtube",
   "title": "One More Time",
   "artist": "Daft Punk",
+  "artists": ["Daft Punk"],
   "album": "Discovery",
+  "albumArtist": "Daft Punk",
+  "trackNumber": 1,
+  "discNumber": 1,
+  "releaseDate": "2001-11-30",
+  "genre": "French House",
+  "explicit": false,
   "downloadTarget": "https://www.youtube.com/watch?v=abc123",
   "externalUrl": "https://www.youtube.com/watch?v=abc123"
 }
@@ -703,8 +746,19 @@ Response example:
   "id": "download-id",
   "title": "One More Time",
   "artist": "Daft Punk",
+  "artists": ["Daft Punk"],
   "album": "Discovery",
+  "albumArtist": "Daft Punk",
+  "trackNumber": 1,
+  "discNumber": 1,
+  "releaseDate": "2001-11-30",
+  "releaseYear": 2001,
+  "genre": "French House",
+  "explicit": false,
   "provider": "youtube",
+  "sourcePlatform": "youtube",
+  "artwork": "https://example.com/cover.jpg",
+  "isrc": "GBDUW0100001",
   "sourceUrl": "https://www.youtube.com/watch?v=abc123",
   "status": "queued",
   "progress": 0,
@@ -726,7 +780,8 @@ Statuses:
 Notes:
 
 - Apollo rejects duplicate downloads when the same track is already in the library or already queued
-- downloaded files are tagged with the resolved title, artist, and album metadata before import
+- Apollo resolves provider metadata before downloading, merges in stronger metadata from supported public APIs when useful, then tags the audio file before import
+- written/imported metadata includes `title`, `artist`, `album`, `albumArtist`, `trackNumber`, `discNumber`, `releaseDate`, `genre`, and `isrc` when available
 
 ### `GET /api/downloads`
 
@@ -810,11 +865,28 @@ Response example:
   "provider": "youtube",
   "title": "One More Time",
   "artist": "Daft Punk",
+  "artists": ["Daft Punk"],
   "album": "Singles",
+  "albumArtist": "Daft Punk",
   "duration": 321,
+  "releaseDate": "",
+  "releaseYear": null,
+  "genre": "",
+  "explicit": null,
+  "sourcePlatform": "youtube",
   "artwork": "",
   "externalUrl": "https://www.youtube.com/watch?v=abc123",
+  "sourceUrl": "https://www.youtube.com/watch?v=abc123",
   "downloadTarget": "https://www.youtube.com/watch?v=abc123",
+  "providerIds": {
+    "deezer": "",
+    "itunes": "",
+    "spotify": "",
+    "youtube": "abc123",
+    "soundcloud": "",
+    "isrc": ""
+  },
+  "isrc": "",
   "normalizedTitle": "one more time",
   "normalizedArtist": "daft punk",
   "normalizedAlbum": "singles",
@@ -848,10 +920,12 @@ Notes:
 
 - if several rescans are requested at the same time, Apollo shares one in-flight rescan instead of starting multiple scans
 - discovered tracks are written back in batches so large rescans do not hammer the state file
+- rescans read embedded file tags instead of relying only on folder names
+- tracks with weak stored metadata are re-enriched from their original source URL or provider identity when Apollo can still resolve them
 
 ### `GET /api/playlists`
 
-Lists playlists with expanded track objects.
+Lists playlists with expanded ordered entries and flattened track objects.
 
 Response example:
 
@@ -861,13 +935,38 @@ Response example:
     {
       "id": "playlist-id",
       "name": "Favorites",
+      "title": "Favorites",
       "description": "",
+      "artworkUrl": "https://example.com/playlist.jpg",
+      "sourcePlatform": "spotify",
+      "sourcePlaylistId": "37i9dQZF1DXcBWIGoYBM5M",
+      "sourceUrl": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+      "sourceSnapshotId": "snapshot-id",
+      "ownerName": "Spotify",
+      "importedAt": "2026-03-11T12:00:00.000Z",
       "trackIds": ["track-id"],
+      "entries": [
+        {
+          "id": "entry-id",
+          "order": 0,
+          "trackId": "track-id",
+          "unavailable": false,
+          "error": "",
+          "addedAt": "2026-03-11T12:00:00.000Z",
+          "track": {
+            "id": "track-id",
+            "title": "One More Time",
+            "artist": "Daft Punk",
+            "provider": "library"
+          }
+        }
+      ],
       "tracks": [
         {
           "id": "track-id",
           "title": "One More Time",
-          "artist": "Daft Punk"
+          "artist": "Daft Punk",
+          "provider": "library"
         }
       ],
       "createdAt": "2026-03-09T10:00:00.000Z",
@@ -889,6 +988,26 @@ Request body:
   "description": "Main rotation"
 }
 ```
+
+### `POST /api/playlists/import`
+
+Imports a playlist from a supported external provider and stores ordered playlist entries.
+
+Request body:
+
+```json
+{
+  "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+}
+```
+
+Behavior:
+
+- supported providers are Spotify, Deezer, YouTube, and SoundCloud
+- Spotify playlist import requires configured Spotify client credentials
+- imported playlist entries keep provider metadata even when Apollo does not already have the track downloaded
+- imported entries are linked to matching Apollo library tracks when possible
+- unavailable provider items are preserved as playlist entries with `unavailable` and `error`
 
 ### `POST /api/playlists/:id/tracks`
 
@@ -914,6 +1033,12 @@ Path params:
 
 - `id`: playlist ID
 - `trackId`: library track ID
+
+Notes:
+
+- playlist order is preserved through `entries[].order`
+- `tracks[]` is a convenience flattened view of the resolved entry tracks
+- imported playlists can contain a mix of linked local tracks and provider-backed remote entries
 
 ### `GET /stream/:trackId`
 
