@@ -168,7 +168,7 @@ async function createRuntime({
     };
   }
 
-  musicServer = createMusicServer({
+  const serviceApi = {
     getOverview: () => store.getOverview(),
     listTracks: (payload) => formatTrackList(store.listTracks(payload)),
     getTrack: (trackId) => store.getTrack(trackId),
@@ -226,7 +226,9 @@ async function createRuntime({
         musicServer.getInfo().baseUrl,
         options
       )
-  });
+  };
+
+  musicServer = createMusicServer(serviceApi);
 
   downloadService.on('updated', (download) => {
     onDownloadUpdate(download);
@@ -265,7 +267,7 @@ async function createRuntime({
       auth: authService.getPublicStatus(),
       overview: store.getOverview(),
       downloads: downloadService.getDownloads(),
-      playlists: store.listPlaylists()
+      playlists: serviceApi.listPlaylists()
     };
   }
 
@@ -296,43 +298,32 @@ async function createRuntime({
     openLibraryPath: () => store.getSettings().libraryDirectory,
     search: (payload) => searchProviders(payload, store.getSettings()),
     inspectLink: (url, options = {}) => inspectDirectLink(url, store.getSettings(), options),
-    queueDownload: (payload) => downloadService.queueDownload(payload),
-    listTracks: (payload) => formatTrackList(store.listTracks(payload)),
-    deleteTrack: (trackId) => libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
-    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory)),
-    listPlaylists: () => ({ items: store.listPlaylists().map((playlist) => formatPlaylist(playlist)) }),
-    getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
-    createPlaylist: async (payload) => formatPlaylist(await store.createPlaylist(payload)),
-    updatePlaylist,
-    deletePlaylist,
+    queueDownload: serviceApi.queueDownload,
+    listTracks: serviceApi.listTracks,
+    deleteTrack: serviceApi.deleteTrack,
+    rescanLibrary: serviceApi.rescanLibrary,
+    listPlaylists: () => ({ items: serviceApi.listPlaylists() }),
+    getPlaylist: serviceApi.getPlaylist,
+    createPlaylist: serviceApi.createPlaylist,
+    updatePlaylist: serviceApi.updatePlaylist,
+    deletePlaylist: serviceApi.deletePlaylist,
     addTrackToPlaylist: async (payload) =>
-      formatPlaylist(await store.addTrackToPlaylist(payload.playlistId, payload.trackId)),
+      serviceApi.addTrackToPlaylist(payload.playlistId, payload.trackId),
     removeTrackFromPlaylist: async (payload) =>
-      formatPlaylist(await store.removeTrackFromPlaylist(payload.playlistId, payload.trackId)),
-    uploadPlaylistArtwork: ({ playlistId, artwork }) => savePlaylistArtwork(playlistId, artwork),
-    deletePlaylistArtwork,
+      serviceApi.removeTrackFromPlaylist(payload.playlistId, payload.trackId),
+    uploadPlaylistArtwork: ({ playlistId, artwork }) =>
+      serviceApi.uploadPlaylistArtwork(playlistId, artwork),
+    deletePlaylistArtwork: serviceApi.deletePlaylistArtwork,
     getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
-    getDownload: (downloadId) => store.getDownload(downloadId),
+    getDownload: serviceApi.getDownload,
     getServerInfo: () => musicServer.getInfo(),
-    searchArtists: (payload, options = {}) => searchArtists({ ...payload, ...options }),
-    getArtist: (artistId, options = {}) => getArtistProfile(artistId, options),
-    listArtistReleases: (artistId, payload, options = {}) =>
-      listArtistReleases(artistId, { ...payload, ...options }),
-    listArtistTracks: (artistId, payload, options = {}) =>
-      listArtistTracks(artistId, { ...payload, ...options }),
-    listReleaseTracks: (releaseId, options = {}) => listReleaseTracks(releaseId, options),
-    getRecommendations: (payload, options = {}) =>
-      getRecommendations(payload, store, musicServer.getInfo().baseUrl, options),
-    getRelatedTracks: (trackId, payload = {}, options = {}) =>
-      getRecommendations(
-        {
-          ...payload,
-          trackId
-        },
-        store,
-        musicServer.getInfo().baseUrl,
-        options
-      )
+    searchArtists: serviceApi.searchArtists,
+    getArtist: serviceApi.getArtist,
+    listArtistReleases: serviceApi.listArtistReleases,
+    listArtistTracks: serviceApi.listArtistTracks,
+    listReleaseTracks: serviceApi.listReleaseTracks,
+    getRecommendations: serviceApi.getRecommendations,
+    getRelatedTracks: serviceApi.getRelatedTracks
   };
 }
 

@@ -50,29 +50,34 @@ function emitDownloadUpdate(download) {
 }
 
 app.whenReady().then(async () => {
-  const baseDir = await ensureAppDataDirectory();
-  const startupService = new StartupService({
-    appRoot: __dirname
-  });
+  try {
+    const baseDir = await ensureAppDataDirectory();
+    const startupService = new StartupService({
+      appRoot: __dirname
+    });
 
-  runtime = await createRuntime({
-    baseDir,
-    startupService,
-    musicRoot: app.getPath('music'),
-    onDownloadUpdate: (download) => emitDownloadUpdate(download)
-  });
-  const dashboard = await runtime.start();
-  keepRunningInBackground = Boolean(dashboard.settings.autoStartBackgroundServer);
+    runtime = await createRuntime({
+      baseDir,
+      startupService,
+      musicRoot: app.getPath('music'),
+      onDownloadUpdate: (download) => emitDownloadUpdate(download)
+    });
+    const dashboard = await runtime.start();
+    keepRunningInBackground = Boolean(dashboard.settings.autoStartBackgroundServer);
 
-  if (!isBackgroundLaunch || !keepRunningInBackground) {
-    createWindow();
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!isBackgroundLaunch || !keepRunningInBackground) {
       createWindow();
     }
-  });
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  } catch (error) {
+    dialog.showErrorBox('Apollo failed to start', error.stack || error.message);
+    app.quit();
+  }
 });
 
 app.on('second-instance', () => {

@@ -10,6 +10,7 @@
     "start": "electron .",
     "start:ui": "electron .",
     "start:cli": "node cli.js start",
+    "test": "node --test",
     "config:path": "node cli.js config-path",
     "config:print": "node cli.js print-config"
   },

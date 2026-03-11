@@ -27,7 +27,8 @@ const elements = {
 };
 
 const state = {
-  dashboard: null
+  dashboard: null,
+  stopDownloadSubscription: null
 };
 
 function setStatus(text) {
@@ -117,6 +118,28 @@ function renderDependencies(dashboard) {
     .join('');
 }
 
+function upsertDownload(download) {
+  if (!state.dashboard) {
+    return;
+  }
+
+  const downloads = Array.isArray(state.dashboard.downloads) ? [...state.dashboard.downloads] : [];
+  const index = downloads.findIndex((item) => item.id === download.id);
+  if (index >= 0) {
+    downloads[index] = download;
+  } else {
+    downloads.unshift(download);
+  }
+
+  state.dashboard.downloads = downloads.sort((left, right) => {
+    return new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime();
+  });
+  state.dashboard.overview.downloadCount = state.dashboard.downloads.length;
+  state.dashboard.overview.completedDownloads = state.dashboard.downloads.filter(
+    (item) => item.status === 'completed'
+  ).length;
+}
+
 async function refreshDashboard() {
   state.dashboard = await window.mediaApp.getDashboard();
   hydrateSettings(state.dashboard.settings);
@@ -152,6 +175,25 @@ document.querySelectorAll('.pick-dir').forEach((button) => {
       elements.settings[button.dataset.pick].value = selected;
     }
   }));
+});
+
+state.stopDownloadSubscription = window.mediaApp.onDownloadUpdate((download) => {
+  upsertDownload(download);
+  if (!state.dashboard) {
+    return;
+  }
+
+  renderStatus(state.dashboard);
+
+  if (download.status === 'completed') {
+    setStatus(`Download complete: ${download.artist} - ${download.title}`);
+  } else if (download.status === 'failed') {
+    setStatus(`Download failed: ${download.message}`);
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  state.stopDownloadSubscription?.();
 });
 
 refreshDashboard()
