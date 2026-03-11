@@ -24,6 +24,7 @@ const { DownloadService } = require('./download-service');
 const { createMusicServer } = require('./music-server');
 const { AuthService } = require('./auth-service');
 const { importPlaylistFromUrl } = require('./playlist-import-service');
+const { resolveSharedTrack } = require('./shared-track-service');
 
 const PLAYLIST_ARTWORK_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
@@ -187,6 +188,14 @@ async function createRuntime({
         musicServer.getInfo().baseUrl,
         options
       ),
+    resolveSharedTrack: (payload, options = {}) =>
+      resolveSharedTrack(
+        payload,
+        store.getSettings(),
+        store,
+        musicServer.getInfo().baseUrl,
+        options
+      ),
     inspectLink: (url, options = {}) => inspectDirectLink(url, store.getSettings(), options),
     listPlaylists: () => store.listPlaylists().map((playlist) => formatPlaylist(playlist)),
     getPlaylist: (playlistId) => formatPlaylist(store.getPlaylist(playlistId)),
@@ -308,6 +317,7 @@ async function createRuntime({
     openLibraryPath: () => store.getSettings().libraryDirectory,
     search: (payload) => searchProviders(payload, store.getSettings()),
     inspectLink: (url, options = {}) => inspectDirectLink(url, store.getSettings(), options),
+    resolveSharedTrack: (payload, options = {}) => serviceApi.resolveSharedTrack(payload, options),
     queueDownload: serviceApi.queueDownload,
     listTracks: serviceApi.listTracks,
     deleteTrack: serviceApi.deleteTrack,

@@ -725,6 +725,26 @@ function createMusicServer(services) {
         return;
       }
 
+      if (request.method === 'POST' && pathname === '/api/resolve-shared-track') {
+        const body = await readBody(request);
+        const requestAbort = createRequestAbortController(
+          request,
+          'Shared track resolution request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `resolve-shared-track:${stableSerialize(body)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.resolveSharedTrack(body, { signal: requestAbort.signal })
+          });
+          sendJson(response, 200, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       if (request.method === 'DELETE' && pathname === '/api/auth/session') {
         const token = extractAccessToken(request, requestUrl);
         sendJson(response, 200, services.revokeAuthSession({ token }));

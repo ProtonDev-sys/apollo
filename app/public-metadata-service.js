@@ -294,6 +294,44 @@ function formatDeezerTrack(track) {
   };
 }
 
+async function lookupItunesTrackById(trackId, { signal } = {}) {
+  const trimmedTrackId = String(trackId || '').trim();
+  if (!trimmedTrackId) {
+    throw createHttpError(400, 'iTunes track ID is required.');
+  }
+
+  const url = `${ITUNES_SEARCH_URL}?id=${encodeURIComponent(trimmedTrackId)}&entity=song&limit=1`;
+  const payload = await fetchCachedJson(`itunes:lookup:${trimmedTrackId}`, url, {
+    signal,
+    ttlMs: 5 * 60 * 1000
+  });
+  const match = (payload.results || []).find((item) => String(item.trackId || item.collectionId || '') === trimmedTrackId);
+
+  if (!match) {
+    throw createHttpError(404, 'iTunes track not found.');
+  }
+
+  return formatItunesTrack(match);
+}
+
+async function lookupDeezerTrackById(trackId, { signal } = {}) {
+  const trimmedTrackId = String(trackId || '').trim();
+  if (!trimmedTrackId) {
+    throw createHttpError(400, 'Deezer track ID is required.');
+  }
+
+  const payload = await fetchCachedJson(`deezer:track:${trimmedTrackId}`, `${DEEZER_API_BASE_URL}/track/${trimmedTrackId}`, {
+    signal,
+    ttlMs: 5 * 60 * 1000
+  });
+
+  if (payload.error) {
+    throw createHttpError(404, 'Deezer track not found.');
+  }
+
+  return formatDeezerTrack(payload);
+}
+
 function formatMusicBrainzReleaseGroup(releaseGroup, artistId) {
   return {
     id: releaseGroup.id,
@@ -897,6 +935,8 @@ module.exports = {
   searchItunesArtistTracksByName,
   formatItunesTrack,
   formatDeezerTrack,
+  lookupItunesTrackById,
+  lookupDeezerTrackById,
   fetchCachedJson,
   fetchJson,
   buildYouTubeSearchTarget

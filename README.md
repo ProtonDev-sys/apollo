@@ -299,6 +299,7 @@ General notes:
 - `pageSize` is capped internally for search and track listing
 - track-like responses include normalized metadata fields: `normalizedTitle`, `normalizedArtist`, `normalizedAlbum`, `normalizedDuration`, and `metadataSource`
 - track-like responses can also include richer metadata such as `artists`, `albumArtist`, `trackNumber`, `discNumber`, `releaseDate`, `releaseYear`, `genre`, `explicit`, `isrc`, `sourcePlatform`, and `sourceUrl`
+- shared-track resolution accepts compact public IDs like `deezer:<id>`, `spotify:<id>`, `youtube:<id>`, and `itunes:<id>`
 
 ### `GET /api/auth/status`
 
@@ -899,6 +900,68 @@ Notes:
 
 - identical concurrent inspect-link requests share one upstream lookup
 - recent identical inspect-link requests are served from a short in-memory cache
+
+### `POST /api/resolve-shared-track`
+
+Resolves a compact shared track token into a full Apollo-compatible track object.
+
+Request body:
+
+```json
+{
+  "id": "deezer:3709069532"
+}
+```
+
+Response example:
+
+```json
+{
+  "id": "deezer:3709069532",
+  "title": "Veridis Quo",
+  "artist": "Daft Punk",
+  "artists": ["Daft Punk"],
+  "album": "Discovery",
+  "albumArtist": "Daft Punk",
+  "duration": 345,
+  "provider": "deezer",
+  "sourcePlatform": "deezer",
+  "artwork": "https://example.com/discovery.jpg",
+  "externalUrl": "https://www.deezer.com/track/3709069532",
+  "downloadTarget": "ytsearch1:Daft Punk Veridis Quo audio",
+  "sourceUrl": "https://www.deezer.com/track/3709069532",
+  "providerIds": {
+    "deezer": "3709069532",
+    "itunes": "",
+    "spotify": "",
+    "youtube": "",
+    "soundcloud": "",
+    "isrc": "GBDUW0100002"
+  },
+  "isrc": "GBDUW0100002",
+  "playable": true,
+  "normalizedTitle": "veridis quo",
+  "normalizedArtist": "daft punk",
+  "normalizedAlbum": "discovery",
+  "normalizedDuration": 345,
+  "metadataSource": "deezer"
+}
+```
+
+Supported namespaces:
+
+- `deezer:<track-id>`
+- `spotify:<track-id>`
+- `youtube:<video-id>`
+- `itunes:<track-id>`
+- `library:<apollo-track-id>` only when the receiving server already has that exact local Apollo track ID
+
+Notes:
+
+- this endpoint exists so clients do not need provider-specific hydration rules in the renderer
+- `soundcloud:<id>` is rejected because a bare SoundCloud ID is not reliably resolvable without a canonical URL
+- `library:<id>` is local to one Apollo server; if another server does not know that track ID it cannot resolve it
+- identical concurrent shared-track resolution requests share one upstream lookup
 
 ### `POST /api/library/rescan`
 
