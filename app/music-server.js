@@ -594,6 +594,26 @@ function createMusicServer(services) {
         return;
       }
 
+      if (request.method === 'POST' && pathname === '/api/playlists/import') {
+        const body = await readBody(request);
+        const requestAbort = createRequestAbortController(
+          request,
+          'Playlist import request was closed by the client.'
+        );
+
+        try {
+          const result = await requestCoordinator.run({
+            cacheKey: `playlist-import:${stableSerialize(body)}`,
+            requestSignal: requestAbort.signal,
+            execute: () => services.importPlaylistFromUrl(body, { signal: requestAbort.signal })
+          });
+          sendJson(response, 201, result);
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       const playlistArtworkRoute = pathname.match(/^\/api\/playlists\/([^/]+)\/artwork$/);
       if (request.method === 'POST' && playlistArtworkRoute) {
         const artwork = await readMultipartArtwork(request);

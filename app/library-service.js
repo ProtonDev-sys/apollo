@@ -1,6 +1,9 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { createHttpError } = require('./http-error');
+const { readAudioMetadata } = require('./file-metadata-service');
+const { resolveDownloadMetadata } = require('./search-service');
+const { mergeTrackMetadata, hasWeakTrackMetadata, normalizeTrackMetadata } = require('./metadata-normalizer');
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus']);
 
@@ -40,11 +43,13 @@ function inferTrackFromPath(libraryDirectory, filePath) {
   const parts = relativeDirectory.split(path.sep).filter(Boolean);
   const title = path.basename(filePath, path.extname(filePath));
 
-  return {
+  return normalizeTrackMetadata({
     title,
     artist: parts[0] || 'Unknown Artist',
-    album: parts[1] || 'Singles'
-  };
+    album: parts[1] || 'Singles',
+    provider: 'library',
+    metadataSource: 'path-fallback'
+  });
 }
 
 async function ensureUniquePath(targetPath) {
@@ -84,23 +89,91 @@ async function removeEmptyParentDirectories(startDirectory, stopDirectory) {
   }
 }
 
+function shouldRepairStoredTrack(track) {
+  return (
+    hasWeakTrackMetadata(track) &&
+    Boolean(track.sourceUrl || track.externalUrl || track.downloadTarget || track.providerIds)
+  );
+}
+
 class LibraryService {
   constructor(store) {
     this.store = store;
   }
 
-  async syncLibrary(libraryDirectory) {
+  async hydrateTrackFromFile(libraryDirectory, filePath, settings, existingTrack) {
+    const inferredTrack = inferTrackFromPath(libraryDirectory, filePath);
+    const embeddedTrack = await readAudioMetadata(filePath, settings);
+    let nextTrack = mergeTrackMetadata(inferredTrack, existingTrack || {});
+    nextTrack = mergeTrackMetadata(nextTrack, embeddedTrack);
+
+    nextTrack = {
+      ...nextTrack,
+      filePath,
+      fileName: path.basename(filePath),
+      provider: existingTrack?.provider || nextTrack.sourcePlatform || 'library',
+      sourcePlatform: existingTrack?.sourcePlatform || nextTrack.sourcePlatform || 'library',
+      sourceUrl: existingTrack?.sourceUrl || nextTrack.sourceUrl || '',
+      externalUrl: existingTrack?.externalUrl || nextTrack.externalUrl || '',
+      artwork: nextTrack.artwork || existingTrack?.artwork || '',
+      providerIds: existingTrack?.providerIds || nextTrack.providerIds || {},
+      isrc: existingTrack?.isrc || nextTrack.isrc || '',
+      metadataSource: existingTrack?.metadataSource || nextTrack.metadataSource || 'library'
+    };
+
+    if (shouldRepairStoredTrack(nextTrack)) {
+      try {
+        const repaired = await resolveDownloadMetadata(
+          {
+            ...nextTrack,
+            provider: nextTrack.sourcePlatform || nextTrack.provider || 'link',
+            externalUrl: nextTrack.externalUrl || nextTrack.sourceUrl || '',
+            sourceUrl: nextTrack.sourceUrl || ''
+          },
+          settings
+        );
+        nextTrack = {
+          ...nextTrack,
+          ...mergeTrackMetadata(nextTrack, repaired),
+          providerIds: repaired.providerIds || nextTrack.providerIds || {},
+          isrc: repaired.isrc || nextTrack.isrc || '',
+          artwork: repaired.artwork || nextTrack.artwork || '',
+          sourceUrl: nextTrack.sourceUrl || repaired.sourceUrl || repaired.externalUrl || '',
+          sourcePlatform: nextTrack.sourcePlatform || repaired.sourcePlatform || repaired.provider || 'library',
+          metadataSource: repaired.metadataSource || nextTrack.metadataSource || 'library'
+        };
+      } catch (error) {
+        // Keep the best local metadata if repair fails.
+      }
+    }
+
+    return {
+      ...nextTrack,
+      filePath,
+      fileName: path.basename(filePath)
+    };
+  }
+
+  async syncLibrary(libraryDirectory, settings = {}) {
     await fs.mkdir(libraryDirectory, { recursive: true });
     const files = await walkAudioFiles(libraryDirectory);
+    const existingTracks = new Map(
+      this.store.listTracks({ page: 1, pageSize: 10000 }).items.map((track) => [
+        String(track.filePath || '').toLowerCase(),
+        track
+      ])
+    );
     const discoveredTracks = [];
 
     for (const filePath of files) {
-      const inferred = inferTrackFromPath(libraryDirectory, filePath);
-      discoveredTracks.push({
-        ...inferred,
-        filePath,
-        provider: 'library'
-      });
+      discoveredTracks.push(
+        await this.hydrateTrackFromFile(
+          libraryDirectory,
+          filePath,
+          settings,
+          existingTracks.get(filePath.toLowerCase()) || null
+        )
+      );
     }
 
     await this.store.upsertTracks(discoveredTracks);
@@ -108,10 +181,11 @@ class LibraryService {
     return this.store.listTracks({ page: 1, pageSize: 8 });
   }
 
-  async importDownloadedFile(sourcePath, metadata, libraryDirectory) {
-    const artist = sanitiseSegment(metadata.artist, 'Unknown Artist');
-    const album = sanitiseSegment(metadata.album, 'Singles');
-    const title = sanitiseSegment(metadata.title, 'Unknown Title');
+  async importDownloadedFile(sourcePath, metadata, libraryDirectory, settings = {}) {
+    const normalizedMetadata = normalizeTrackMetadata(metadata);
+    const artist = sanitiseSegment(normalizedMetadata.artist, 'Unknown Artist');
+    const album = sanitiseSegment(normalizedMetadata.album, 'Singles');
+    const title = sanitiseSegment(normalizedMetadata.title, 'Unknown Title');
     const extension = path.extname(sourcePath) || '.mp3';
     const artistDirectory = path.join(libraryDirectory, artist, album);
 
@@ -119,17 +193,14 @@ class LibraryService {
     const targetPath = await ensureUniquePath(path.join(artistDirectory, `${title}${extension}`));
     await fs.rename(sourcePath, targetPath);
 
-    return this.store.upsertTrack({
-      title: metadata.title,
-      artist: metadata.artist,
-      album: metadata.album,
-      duration: metadata.duration,
-      provider: metadata.provider,
-      artwork: metadata.artwork,
-      providerIds: metadata.providerIds,
-      sourceUrl: metadata.sourceUrl,
-      filePath: targetPath
+    const hydratedTrack = await this.hydrateTrackFromFile(libraryDirectory, targetPath, settings, {
+      ...metadata,
+      ...normalizedMetadata,
+      provider: metadata.provider || normalizedMetadata.sourcePlatform || 'library',
+      sourcePlatform: metadata.sourcePlatform || metadata.provider || normalizedMetadata.sourcePlatform || 'library'
     });
+
+    return this.store.upsertTrack(hydratedTrack);
   }
 
   async deleteTrack(trackId, libraryDirectory) {

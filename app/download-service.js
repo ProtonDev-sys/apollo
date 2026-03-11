@@ -7,6 +7,7 @@ const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require(
 const { createHttpError } = require('./http-error');
 const { isTrackEquivalent } = require('./data-store');
 const { resolveDownloadMetadata } = require('./search-service');
+const { writeAudioMetadata } = require('./file-metadata-service');
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.opus']);
 const ACTIVE_DOWNLOAD_STATUSES = new Set(['queued', 'running']);
@@ -44,10 +45,22 @@ function buildRecordFromItem(item) {
     id: randomUUID(),
     title: item.title || 'Unknown Title',
     artist: item.artist || 'Unknown Artist',
+    artists: item.artists || [item.artist || 'Unknown Artist'],
     album: item.album || 'Singles',
+    albumArtist: item.albumArtist || item.artist || 'Unknown Artist',
+    trackNumber: item.trackNumber || null,
+    discNumber: item.discNumber || null,
     duration: item.duration || null,
+    releaseDate: item.releaseDate || '',
+    releaseYear: item.releaseYear || null,
+    genre: item.genre || '',
+    explicit:
+      item.explicit === null || item.explicit === undefined ? null : Boolean(item.explicit),
     provider: item.provider || 'link',
+    sourcePlatform: item.sourcePlatform || item.provider || 'link',
     providerIds: item.providerIds || {},
+    isrc: item.isrc || item.providerIds?.isrc || '',
+    artwork: item.artwork || '',
     sourceUrl: item.externalUrl || item.downloadTarget || '',
     status: 'queued',
     progress: 0,
@@ -136,36 +149,6 @@ class DownloadService extends EventEmitter {
     }
 
     return preparedItem;
-  }
-
-  async writeAudioMetadata(sourcePath, metadata, ffmpegPath) {
-    const title = String(metadata.title || '').trim();
-    const artist = String(metadata.artist || '').trim();
-    const album = String(metadata.album || '').trim();
-    const args = ['-y', '-i', sourcePath, '-map', '0', '-codec', 'copy'];
-
-    if (title) {
-      args.push('-metadata', `title=${title}`);
-    }
-    if (artist) {
-      args.push('-metadata', `artist=${artist}`);
-    }
-    if (album) {
-      args.push('-metadata', `album=${album}`);
-    }
-
-    if (args.length === 6) {
-      return;
-    }
-
-    const tempPath = path.join(
-      path.dirname(sourcePath),
-      `${path.basename(sourcePath, path.extname(sourcePath))}.tagged${path.extname(sourcePath)}`
-    );
-
-    await runProcess(ffmpegPath, [...args, tempPath]);
-    await fs.rm(sourcePath, { force: true });
-    await fs.rename(tempPath, sourcePath);
   }
 
   async queueDownload(item) {
@@ -325,7 +308,7 @@ class DownloadService extends EventEmitter {
         return;
       }
 
-      await this.writeAudioMetadata(downloadedFile, item, ffmpegPath);
+      await writeAudioMetadata(downloadedFile, item, ffmpegPath);
 
       const existingTrack = this.store.findMatchingTrack(item);
       if (existingTrack) {
@@ -340,14 +323,27 @@ class DownloadService extends EventEmitter {
         {
           title: item.title,
           artist: item.artist,
+          artists: item.artists,
           album: item.album,
+          albumArtist: item.albumArtist,
+          trackNumber: item.trackNumber,
+          discNumber: item.discNumber,
           duration: item.duration,
+          releaseDate: item.releaseDate,
+          releaseYear: item.releaseYear,
+          genre: item.genre,
+          explicit: item.explicit,
           provider: item.provider,
+          sourcePlatform: item.sourcePlatform || item.provider,
           artwork: item.artwork || '',
           providerIds: item.providerIds || {},
-          sourceUrl: item.externalUrl || item.downloadTarget || ''
+          isrc: item.isrc || item.providerIds?.isrc || '',
+          sourceUrl: item.sourceUrl || item.externalUrl || item.downloadTarget || '',
+          externalUrl: item.externalUrl || item.sourceUrl || '',
+          metadataSource: item.metadataSource || item.provider || 'download'
         },
-        settings.libraryDirectory
+        settings.libraryDirectory,
+        settings
       );
 
       record.status = 'completed';

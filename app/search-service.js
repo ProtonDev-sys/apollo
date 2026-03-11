@@ -4,7 +4,13 @@ const { createHttpError, isAbortError } = require('./http-error');
 const { isTrackEquivalent } = require('./data-store');
 const { searchDeezerTracks, searchItunesTracks } = require('./public-metadata-service');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
-const { normalizeTrackMetadata } = require('./metadata-normalizer');
+const {
+  normalizeTrackMetadata,
+  mergeTrackMetadata,
+  hasWeakTrackMetadata,
+  countMetadataFields,
+  isGenericAlbumName
+} = require('./metadata-normalizer');
 
 const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud', 'itunes', 'deezer'];
 const NON_SONG_VIDEO_PATTERN =
@@ -90,6 +96,34 @@ function parseProviderSelection(input) {
   }
 
   return [...new Set(rawProviders)];
+}
+
+function mergeProviderIds(...providerIdGroups) {
+  return createEmptyProviderIds(
+    Object.assign(
+      {},
+      ...providerIdGroups.map((providerIds) => createEmptyProviderIds(providerIds || {}))
+    )
+  );
+}
+
+function buildProviderIdentityUrl(input = {}) {
+  const providerIds = createEmptyProviderIds(input.providerIds);
+  const provider = String(input.provider || input.sourcePlatform || '').toLowerCase();
+
+  if ((provider === 'spotify' || providerIds.spotify) && providerIds.spotify) {
+    return `https://open.spotify.com/track/${providerIds.spotify}`;
+  }
+
+  if ((provider === 'youtube' || providerIds.youtube) && providerIds.youtube) {
+    return `https://www.youtube.com/watch?v=${providerIds.youtube}`;
+  }
+
+  if ((provider === 'deezer' || providerIds.deezer) && providerIds.deezer) {
+    return `https://www.deezer.com/track/${providerIds.deezer}`;
+  }
+
+  return '';
 }
 
 function getSpotifyTokenCacheKey(settings) {
@@ -179,7 +213,9 @@ async function fetchSpotifyTrackPageMetadata(url, signal) {
     provider: 'spotify',
     title,
     artist,
+    artists: artist ? [artist] : [],
     album: descriptionParts[1] || 'Spotify',
+    albumArtist: artist,
     duration: null,
     metadataSource: 'spotify-page'
   });
@@ -189,14 +225,24 @@ async function fetchSpotifyTrackPageMetadata(url, signal) {
     provider: 'spotify',
     title: normalized.title,
     artist: normalized.artist,
+    artists: normalized.artists,
     album: normalized.album,
+    albumArtist: normalized.albumArtist,
+    trackNumber: normalized.trackNumber,
+    discNumber: normalized.discNumber,
     duration: normalized.duration,
+    releaseDate: normalized.releaseDate,
+    releaseYear: normalized.releaseYear,
+    genre: normalized.genre,
+    explicit: normalized.explicit,
     artwork: ogImage,
     externalUrl: url,
+    sourceUrl: url,
     downloadTarget: buildSpotifyDownloadTarget(normalized.artist, normalized.title),
     providerIds: createEmptyProviderIds({
       spotify: trackId
     }),
+    isrc: '',
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
     normalizedAlbum: normalized.normalizedAlbum,
@@ -210,8 +256,17 @@ function formatSpotifyTrack(item) {
     provider: 'spotify',
     title: item.name,
     artist: item.artists.map((artist) => artist.name).join(', '),
+    artists: item.artists.map((artist) => artist.name),
     album: item.album?.name || 'Spotify',
+    albumArtist:
+      item.album?.artists?.map((artist) => artist.name).filter(Boolean).join(', ') ||
+      item.artists.map((artist) => artist.name).join(', '),
+    trackNumber: item.track_number || null,
+    discNumber: item.disc_number || null,
     duration: item.duration_ms ? Math.round(item.duration_ms / 1000) : null,
+    releaseDate: item.album?.release_date || '',
+    explicit: item.explicit,
+    isrc: item.external_ids?.isrc || '',
     metadataSource: 'spotify'
   });
 
@@ -220,15 +275,25 @@ function formatSpotifyTrack(item) {
     provider: 'spotify',
     title: normalized.title,
     artist: normalized.artist,
+    artists: normalized.artists,
     album: normalized.album,
+    albumArtist: normalized.albumArtist,
+    trackNumber: normalized.trackNumber,
+    discNumber: normalized.discNumber,
     duration: normalized.duration,
+    releaseDate: normalized.releaseDate,
+    releaseYear: normalized.releaseYear,
+    genre: normalized.genre,
+    explicit: normalized.explicit,
     artwork: item.album?.images?.[1]?.url || item.album?.images?.[0]?.url || '',
     externalUrl: item.external_urls?.spotify || '',
+    sourceUrl: item.external_urls?.spotify || '',
     downloadTarget: buildSpotifyDownloadTarget(normalized.artist, normalized.title),
     providerIds: createEmptyProviderIds({
       spotify: item.id,
       isrc: item.external_ids?.isrc || ''
     }),
+    isrc: normalized.isrc,
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
     normalizedAlbum: normalized.normalizedAlbum,
@@ -287,33 +352,235 @@ async function searchSpotify(query, page, pageSize, settings, signal) {
   };
 }
 
-function formatYtDlpEntry(entry, provider) {
+function hasCompatibleDuration(leftDuration, rightDuration) {
+  if (!leftDuration || !rightDuration) {
+    return true;
+  }
+
+  return Math.abs(Number(leftDuration) - Number(rightDuration)) <= 5;
+}
+
+function scoreMetadataCandidate(seed, candidate) {
+  const left = normalizeTrackMetadata(seed);
+  const right = normalizeTrackMetadata(candidate);
+  let score = countMetadataFields(right);
+
+  if (left.isrc && right.isrc && left.isrc === right.isrc) {
+    score += 80;
+  }
+
+  if (left.normalizedTitle && right.normalizedTitle && left.normalizedTitle === right.normalizedTitle) {
+    score += 25;
+  } else if (
+    left.normalizedTitle &&
+    right.normalizedTitle &&
+    (left.normalizedTitle.includes(right.normalizedTitle) || right.normalizedTitle.includes(left.normalizedTitle))
+  ) {
+    score += 10;
+  } else {
+    score -= 20;
+  }
+
+  if (left.normalizedArtist && right.normalizedArtist && left.normalizedArtist === right.normalizedArtist) {
+    score += 25;
+  } else if (
+    left.normalizedArtist &&
+    right.normalizedArtist &&
+    (left.normalizedArtist.includes(right.normalizedArtist) || right.normalizedArtist.includes(left.normalizedArtist))
+  ) {
+    score += 10;
+  } else {
+    score -= 20;
+  }
+
+  if (hasCompatibleDuration(left.duration, right.duration)) {
+    score += 10;
+  } else {
+    score -= 15;
+  }
+
+  if (
+    left.normalizedAlbum &&
+    right.normalizedAlbum &&
+    !isGenericAlbumName(left.album) &&
+    !isGenericAlbumName(right.album) &&
+    left.normalizedAlbum === right.normalizedAlbum
+  ) {
+    score += 6;
+  }
+
+  if (right.artwork) {
+    score += 2;
+  }
+
+  if (right.releaseDate || right.releaseYear) {
+    score += 2;
+  }
+
+  return score;
+}
+
+function shouldEnrichTrackMetadata(track) {
+  const normalized = normalizeTrackMetadata(track);
+  return (
+    hasWeakTrackMetadata(normalized) ||
+    ['youtube', 'soundcloud', 'link'].includes(normalized.sourcePlatform) ||
+    ['spotify-page'].includes(normalized.metadataSource)
+  );
+}
+
+async function searchMetadataCandidates(seed, settings, signal) {
+  const normalizedSeed = normalizeTrackMetadata(seed);
+  const searchText = [normalizedSeed.artist, normalizedSeed.title].filter(Boolean).join(' ').trim();
+  const results = [];
+  const candidateRequests = [
+    searchItunesTracks({
+      query: searchText,
+      page: 1,
+      pageSize: 5,
+      signal
+    }),
+    searchDeezerTracks({
+      query: searchText,
+      page: 1,
+      pageSize: 5,
+      signal
+    })
+  ];
+
+  if (settings.spotifyClientId && settings.spotifyClientSecret) {
+    candidateRequests.push(
+      searchSpotify(normalizedSeed.isrc ? `isrc:${normalizedSeed.isrc}` : searchText, 1, 5, settings, signal)
+        .catch(() => searchSpotify(searchText, 1, 5, settings, signal))
+    );
+  }
+
+  const settled = await Promise.allSettled(candidateRequests);
+  for (const result of settled) {
+    if (result.status === 'fulfilled') {
+      results.push(...result.value.items);
+    }
+  }
+
+  return dedupeRemoteItems(results);
+}
+
+async function enrichTrackMetadata(seed, settings, { signal, force = false } = {}) {
+  const base = normalizeTrackMetadata(seed);
+  if (!force && !shouldEnrichTrackMetadata(base)) {
+    return {
+      ...seed,
+      ...base,
+      providerIds: mergeProviderIds(seed.providerIds),
+      isrc: base.isrc
+    };
+  }
+
+  const searchText = [base.artist, base.title].filter(Boolean).join(' ').trim();
+  if (!searchText) {
+    return {
+      ...seed,
+      ...base,
+      providerIds: mergeProviderIds(seed.providerIds),
+      isrc: base.isrc
+    };
+  }
+
+  const candidates = await searchMetadataCandidates(base, settings, signal);
+  let bestCandidate = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const score = scoreMetadataCandidate(base, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+  }
+
+  if (!bestCandidate || bestScore < 30) {
+    return {
+      ...seed,
+      ...base,
+      providerIds: mergeProviderIds(seed.providerIds),
+      isrc: base.isrc
+    };
+  }
+
+  const merged = mergeTrackMetadata(bestCandidate, {
+    ...base,
+    sourcePlatform: base.sourcePlatform || bestCandidate.sourcePlatform,
+    sourceUrl: seed.sourceUrl || base.sourceUrl || seed.externalUrl || bestCandidate.externalUrl || '',
+    externalUrl: seed.externalUrl || base.externalUrl || buildProviderIdentityUrl(seed) || '',
+    metadataSource: `${base.metadataSource || 'unknown'}+${bestCandidate.metadataSource || bestCandidate.provider || 'enriched'}`
+  });
+  const providerIds = mergeProviderIds(bestCandidate.providerIds, seed.providerIds);
+
+  return {
+    ...seed,
+    ...merged,
+    providerIds,
+    isrc: merged.isrc || providerIds.isrc || ''
+  };
+}
+
+function buildResolvedTrackMetadata(entry, provider) {
   const resolvedUrl = resolveEntryUrl(entry, provider);
   const normalized = normalizeTrackMetadata({
     provider,
     title: entry.track || entry.title || 'Untitled',
-    artist: entry.artist || entry.uploader || entry.channel || 'Unknown Artist',
-    album: entry.album || (provider === 'youtube' ? 'YouTube' : 'SoundCloud'),
+    artist: entry.artist || entry.creator || entry.uploader || entry.channel || entry.album_artist || 'Unknown Artist',
+    artists:
+      entry.artists ||
+      entry.creators?.map((creator) => creator.name).filter(Boolean) ||
+      [],
+    album:
+      entry.album ||
+      entry.playlist_title ||
+      (provider === 'youtube' ? 'YouTube' : provider === 'soundcloud' ? 'SoundCloud' : 'Singles'),
+    albumArtist: entry.album_artist || entry.artist || '',
+    trackNumber: entry.track_number || entry.track_number || entry.tracknumber || null,
+    discNumber: entry.disc_number || entry.discnumber || null,
     duration: entry.duration || null,
+    releaseDate: entry.release_date || entry.upload_date || entry.release_year || entry.year || '',
+    genre: entry.genre || entry.genres || '',
+    explicit: Number(entry.age_limit) > 15 ? true : null,
+    isrc: entry.track_id || entry.isrc || entry.external_ids?.isrc || '',
     metadataSource: provider
   });
 
   return {
-    id: `${provider}:${entry.id || randomUUID()}`,
-    provider,
     title: normalized.title,
     artist: normalized.artist,
+    artists: normalized.artists,
     album: normalized.album,
+    albumArtist: normalized.albumArtist,
+    trackNumber: normalized.trackNumber,
+    discNumber: normalized.discNumber,
     duration: normalized.duration,
+    releaseDate: normalized.releaseDate,
+    releaseYear: normalized.releaseYear,
+    genre: normalized.genre,
+    explicit: normalized.explicit,
     artwork: resolveEntryArtwork(entry),
     externalUrl: resolvedUrl,
+    sourceUrl: resolvedUrl,
     downloadTarget: resolvedUrl,
     providerIds: resolveEntryProviderIds(entry, provider),
+    isrc: normalized.isrc,
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
     normalizedAlbum: normalized.normalizedAlbum,
     normalizedDuration: normalized.normalizedDuration,
     metadataSource: normalized.metadataSource
+  };
+}
+
+function formatYtDlpEntry(entry, provider) {
+  return {
+    id: `${provider}:${entry.id || randomUUID()}`,
+    provider,
+    ...buildResolvedTrackMetadata(entry, provider)
   };
 }
 
@@ -372,39 +639,9 @@ function resolveEntryProviderIds(entry, fallbackProvider = 'link') {
 
 function extractResolvedMetadata(entry, fallbackProvider = 'link') {
   const provider = resolveProviderName(entry, fallbackProvider);
-  const normalized = normalizeTrackMetadata({
-    provider,
-    title: entry.track || entry.title || 'Untitled',
-    artist:
-      entry.artist ||
-      entry.creator ||
-      entry.uploader ||
-      entry.channel ||
-      entry.album_artist ||
-      'Unknown Artist',
-    album:
-      entry.album ||
-      entry.playlist_title ||
-      (provider === 'youtube' ? 'YouTube' : provider === 'soundcloud' ? 'SoundCloud' : 'Singles'),
-    duration: entry.duration || null,
-    metadataSource: provider
-  });
-
   return {
     provider,
-    title: normalized.title,
-    artist: normalized.artist,
-    album: normalized.album,
-    duration: normalized.duration,
-    artwork: resolveEntryArtwork(entry),
-    externalUrl: resolveEntryUrl(entry, provider),
-    downloadTarget: resolveEntryUrl(entry, provider),
-    providerIds: resolveEntryProviderIds(entry, provider),
-    normalizedTitle: normalized.normalizedTitle,
-    normalizedArtist: normalized.normalizedArtist,
-    normalizedAlbum: normalized.normalizedAlbum,
-    normalizedDuration: normalized.normalizedDuration,
-    metadataSource: normalized.metadataSource
+    ...buildResolvedTrackMetadata(entry, provider)
   };
 }
 
@@ -714,15 +951,12 @@ async function inspectDirectLink(url, settings, { signal } = {}) {
 
   return {
     id: `link:${payload.id || randomUUID()}`,
-    provider: metadata.provider,
-    title: metadata.title,
-    artist: metadata.artist,
-    album: metadata.album,
-    duration: metadata.duration,
-    artwork: metadata.artwork,
+    ...metadata,
     externalUrl: metadata.externalUrl || trimmedUrl,
+    sourceUrl: metadata.sourceUrl || metadata.externalUrl || trimmedUrl,
     downloadTarget: trimmedUrl,
-    providerIds: metadata.providerIds
+    providerIds: mergeProviderIds(metadata.providerIds),
+    isrc: metadata.isrc || metadata.providerIds?.isrc || ''
   };
 }
 
@@ -808,66 +1042,134 @@ async function resolveRemoteMedia(input, settings, { signal } = {}) {
 }
 
 async function resolveDownloadMetadata(input, settings) {
-  const target = input.downloadTarget || input.externalUrl || input.url;
+  const target =
+    input.downloadTarget ||
+    input.externalUrl ||
+    input.sourceUrl ||
+    input.url ||
+    buildProviderIdentityUrl(input);
   if (!target) {
     return {
       ...input,
-      providerIds: createEmptyProviderIds(input.providerIds)
+      ...normalizeTrackMetadata(input),
+      providerIds: createEmptyProviderIds(input.providerIds),
+      isrc: input.isrc || input.providerIds?.isrc || ''
     };
   }
 
+  let resolvedItem = null;
+
   if (input.provider === 'spotify' && isSpotifyTrackUrl(target)) {
     const spotifyMetadata = await fetchSpotifyTrackPageMetadata(target);
-    return {
+    resolvedItem = {
       ...spotifyMetadata,
       ...input,
       title: input.title || spotifyMetadata.title,
       artist: input.artist || spotifyMetadata.artist,
+      artists: input.artists || spotifyMetadata.artists,
       album: input.album || spotifyMetadata.album,
+      albumArtist: input.albumArtist || spotifyMetadata.albumArtist,
+      trackNumber: input.trackNumber || spotifyMetadata.trackNumber,
+      discNumber: input.discNumber || spotifyMetadata.discNumber,
+      duration: input.duration || spotifyMetadata.duration,
+      releaseDate: input.releaseDate || spotifyMetadata.releaseDate,
+      releaseYear: input.releaseYear || spotifyMetadata.releaseYear,
+      genre: input.genre || spotifyMetadata.genre,
+      explicit:
+        input.explicit === null || input.explicit === undefined
+          ? spotifyMetadata.explicit
+          : input.explicit,
       artwork: input.artwork || spotifyMetadata.artwork,
       externalUrl: target,
+      sourceUrl: input.sourceUrl || target,
       downloadTarget: input.downloadTarget || spotifyMetadata.downloadTarget,
-      providerIds: createEmptyProviderIds({
+      providerIds: mergeProviderIds({
         ...spotifyMetadata.providerIds,
         ...input.providerIds
-      })
+      }),
+      isrc: input.isrc || spotifyMetadata.isrc || spotifyMetadata.providerIds?.isrc || ''
     };
-  }
-
-  if (input.provider === 'spotify') {
-    return {
+  } else if (input.provider === 'spotify') {
+    resolvedItem = {
       ...input,
-      providerIds: createEmptyProviderIds(input.providerIds)
+      ...normalizeTrackMetadata(input),
+      providerIds: createEmptyProviderIds(input.providerIds),
+      sourceUrl: input.sourceUrl || input.externalUrl || target,
+      externalUrl: input.externalUrl || buildProviderIdentityUrl(input) || '',
+      isrc: input.isrc || input.providerIds?.isrc || ''
+    };
+  } else {
+    const ytDlpPath = await resolveExecutablePath(
+      settings.ytDlpPath,
+      INSTALLABLE_DEPENDENCIES.ytDlp.binaryName
+    );
+    const { stdout } = await runProcess(ytDlpPath, [
+      '--dump-single-json',
+      '--no-warnings',
+      target
+    ]);
+    const payload = JSON.parse(stdout);
+    const resolved = extractResolvedMetadata(payload, input.provider || 'link');
+
+    resolvedItem = {
+      ...resolved,
+      ...input,
+      provider: resolved.provider || input.provider || 'link',
+      sourcePlatform: resolved.provider || input.provider || input.sourcePlatform || 'link',
+      title: resolved.title || input.title || 'Untitled',
+      artist: resolved.artist || input.artist || 'Unknown Artist',
+      artists: input.artists || resolved.artists,
+      album: resolved.album || input.album || 'Singles',
+      albumArtist: resolved.albumArtist || input.albumArtist || resolved.artist || '',
+      trackNumber: resolved.trackNumber || input.trackNumber || null,
+      discNumber: resolved.discNumber || input.discNumber || null,
+      duration: resolved.duration || input.duration || null,
+      releaseDate: resolved.releaseDate || input.releaseDate || '',
+      releaseYear: resolved.releaseYear || input.releaseYear || null,
+      genre: resolved.genre || input.genre || '',
+      explicit:
+        input.explicit === null || input.explicit === undefined
+          ? resolved.explicit
+          : input.explicit,
+      artwork: resolved.artwork || input.artwork || '',
+      externalUrl: resolved.externalUrl || input.externalUrl || target,
+      sourceUrl: input.sourceUrl || resolved.sourceUrl || resolved.externalUrl || target,
+      downloadTarget: input.downloadTarget || resolved.downloadTarget || target,
+      providerIds: mergeProviderIds(resolved.providerIds, input.providerIds),
+      isrc: input.isrc || resolved.isrc || resolved.providerIds?.isrc || ''
     };
   }
 
-  const ytDlpPath = await resolveExecutablePath(
-    settings.ytDlpPath,
-    INSTALLABLE_DEPENDENCIES.ytDlp.binaryName
-  );
-  const { stdout } = await runProcess(ytDlpPath, [
-    '--dump-single-json',
-    '--no-warnings',
-    target
-  ]);
-  const payload = JSON.parse(stdout);
-  const resolved = extractResolvedMetadata(payload, input.provider || 'link');
+  const enriched = await enrichTrackMetadata(resolvedItem, settings, {
+    force: shouldEnrichTrackMetadata(resolvedItem)
+  });
 
   return {
-    ...resolved,
-    ...input,
-    provider: resolved.provider || input.provider || 'link',
-    title: resolved.title || input.title || 'Untitled',
-    artist: resolved.artist || input.artist || 'Unknown Artist',
-    album: resolved.album || input.album || 'Singles',
-    duration: resolved.duration || input.duration || null,
-    artwork: resolved.artwork || input.artwork || '',
-    externalUrl: resolved.externalUrl || input.externalUrl || target,
-    downloadTarget: input.downloadTarget || resolved.downloadTarget || target,
-    providerIds: createEmptyProviderIds({
-      ...resolved.providerIds,
-      ...input.providerIds
-    })
+    ...resolvedItem,
+    ...enriched,
+    provider: resolvedItem.provider || input.provider || enriched.sourcePlatform || 'link',
+    sourcePlatform:
+      resolvedItem.sourcePlatform || input.sourcePlatform || input.provider || enriched.sourcePlatform || 'link',
+    externalUrl:
+      resolvedItem.externalUrl ||
+      enriched.externalUrl ||
+      input.externalUrl ||
+      buildProviderIdentityUrl(resolvedItem) ||
+      '',
+    sourceUrl:
+      resolvedItem.sourceUrl ||
+      enriched.sourceUrl ||
+      input.sourceUrl ||
+      input.externalUrl ||
+      target,
+    downloadTarget: resolvedItem.downloadTarget || input.downloadTarget || target,
+    providerIds: mergeProviderIds(resolvedItem.providerIds, enriched.providerIds, input.providerIds),
+    isrc:
+      enriched.isrc ||
+      resolvedItem.isrc ||
+      resolvedItem.providerIds?.isrc ||
+      input.isrc ||
+      ''
   };
 }
 
@@ -933,5 +1235,11 @@ module.exports = {
   searchCatalog,
   resolveDownloadMetadata,
   resolvePlayback,
-  resolveClientDownload
+  resolveClientDownload,
+  fetchSpotifyToken,
+  fetchSpotifyTrackPageMetadata,
+  formatSpotifyTrack,
+  extractResolvedMetadata,
+  enrichTrackMetadata,
+  buildProviderIdentityUrl
 };

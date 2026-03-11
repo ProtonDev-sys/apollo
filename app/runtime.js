@@ -23,6 +23,7 @@ const { formatApiTrack, formatApiPlaylist, resolvePlaylistArtworkUrl } = require
 const { DownloadService } = require('./download-service');
 const { createMusicServer } = require('./music-server');
 const { AuthService } = require('./auth-service');
+const { importPlaylistFromUrl } = require('./playlist-import-service');
 
 const PLAYLIST_ARTWORK_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
@@ -196,6 +197,12 @@ async function createRuntime({
       formatPlaylist(await store.addTrackToPlaylist(playlistId, trackId)),
     removeTrackFromPlaylist: async (playlistId, trackId) =>
       formatPlaylist(await store.removeTrackFromPlaylist(playlistId, trackId)),
+    importPlaylistFromUrl: async (payload, options = {}) =>
+      formatPlaylist(
+        await store.createPlaylist(
+          await importPlaylistFromUrl(payload.url, store.getSettings(), options)
+        )
+      ),
     uploadPlaylistArtwork: savePlaylistArtwork,
     deletePlaylistArtwork,
     getPlaylistArtworkPath: (fileName) => path.join(playlistArtworkDirectory, path.basename(fileName)),
@@ -206,7 +213,10 @@ async function createRuntime({
     listDownloads: () => downloadService.getDownloads(),
     getDownload: (downloadId) => store.getDownload(downloadId),
     queueDownload: (payload) => downloadService.queueDownload(payload),
-    rescanLibrary: async () => formatTrackList(await libraryService.syncLibrary(store.getSettings().libraryDirectory)),
+    rescanLibrary: async () =>
+      formatTrackList(
+        await libraryService.syncLibrary(store.getSettings().libraryDirectory, store.getSettings())
+      ),
     searchArtists: (payload, options = {}) => searchArtists({ ...payload, ...options }),
     getArtist: (artistId, options = {}) => getArtistProfile(artistId, options),
     listArtistReleases: (artistId, payload, options = {}) =>
@@ -243,7 +253,7 @@ async function createRuntime({
 
   async function start() {
     await ensureDirectories();
-    await libraryService.syncLibrary(store.getSettings().libraryDirectory);
+    await libraryService.syncLibrary(store.getSettings().libraryDirectory, store.getSettings());
 
     const settings = store.getSettings();
     await musicServer.start({
@@ -305,6 +315,7 @@ async function createRuntime({
     listPlaylists: () => ({ items: serviceApi.listPlaylists() }),
     getPlaylist: serviceApi.getPlaylist,
     createPlaylist: serviceApi.createPlaylist,
+    importPlaylistFromUrl: (payload, options = {}) => serviceApi.importPlaylistFromUrl(payload, options),
     updatePlaylist: serviceApi.updatePlaylist,
     deletePlaylist: serviceApi.deletePlaylist,
     addTrackToPlaylist: async (payload) =>

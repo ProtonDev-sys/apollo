@@ -7,6 +7,7 @@ const {
   createSharedSecretRecord,
   normaliseSessionTtlHours
 } = require('./auth-service');
+const { normalizeTrackMetadata, mergeTrackMetadata } = require('./metadata-normalizer');
 
 function createDefaultSettings(musicRoot) {
   const serverRoot = path.join(musicRoot, 'Apollo');
@@ -27,7 +28,7 @@ function createDefaultSettings(musicRoot) {
   };
 }
 
-const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud']);
+const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
 const EXPLICITLY_CLEARABLE_STRING_SETTINGS = new Set([
   'ytDlpPath',
   'ffmpegPath',
@@ -121,6 +122,97 @@ function isTrackEquivalent(left, right) {
   return hasSameMetadataFingerprint(left, right);
 }
 
+function normaliseStoredTrack(track = {}, existingTrack = null) {
+  const mergedMetadata = mergeTrackMetadata(existingTrack || {}, track || {});
+  const providerIds = normaliseProviderIds(track.providerIds || existingTrack?.providerIds || {});
+  const filePath = track.filePath || existingTrack?.filePath || '';
+
+  return {
+    id: track.id || existingTrack?.id || randomUUID(),
+    title: mergedMetadata.title || 'Unknown Title',
+    artist: mergedMetadata.artist || 'Unknown Artist',
+    artists: Array.isArray(mergedMetadata.artists) ? mergedMetadata.artists : [mergedMetadata.artist || 'Unknown Artist'],
+    album: mergedMetadata.album || 'Singles',
+    albumArtist: mergedMetadata.albumArtist || mergedMetadata.artist || 'Unknown Artist',
+    trackNumber: mergedMetadata.trackNumber || null,
+    discNumber: mergedMetadata.discNumber || null,
+    duration: mergedMetadata.duration || null,
+    releaseDate: mergedMetadata.releaseDate || '',
+    releaseYear: mergedMetadata.releaseYear || null,
+    genre: mergedMetadata.genre || '',
+    explicit:
+      mergedMetadata.explicit === null || mergedMetadata.explicit === undefined
+        ? null
+        : Boolean(mergedMetadata.explicit),
+    provider: track.provider || existingTrack?.provider || mergedMetadata.sourcePlatform || 'library',
+    sourcePlatform:
+      track.sourcePlatform || existingTrack?.sourcePlatform || mergedMetadata.sourcePlatform || track.provider || 'library',
+    artwork:
+      typeof track.artwork === 'string'
+        ? track.artwork
+        : existingTrack?.artwork || mergedMetadata.artwork || '',
+    providerIds,
+    isrc: track.isrc || providerIds.isrc || existingTrack?.isrc || '',
+    sourceUrl: track.sourceUrl || existingTrack?.sourceUrl || mergedMetadata.sourceUrl || '',
+    externalUrl: track.externalUrl || existingTrack?.externalUrl || mergedMetadata.externalUrl || '',
+    metadataSource: track.metadataSource || existingTrack?.metadataSource || mergedMetadata.metadataSource || 'library',
+    filePath,
+    fileName: track.fileName || existingTrack?.fileName || (filePath ? path.basename(filePath) : ''),
+    addedAt: existingTrack ? existingTrack.addedAt : new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function createPlaylistEntry(entry = {}, order = 0) {
+  const sourceTrack = entry.sourceTrack ? normaliseStoredTrack(entry.sourceTrack) : null;
+  return {
+    id: entry.id || randomUUID(),
+    order,
+    trackId: entry.trackId || '',
+    sourceTrack,
+    unavailable: Boolean(entry.unavailable),
+    error: String(entry.error || '').trim(),
+    addedAt: entry.addedAt || new Date().toISOString()
+  };
+}
+
+function normalisePlaylistState(playlist = {}) {
+  const trackIds = Array.isArray(playlist.trackIds) ? playlist.trackIds.filter(Boolean) : [];
+  const explicitEntries = Array.isArray(playlist.entries)
+    ? playlist.entries.map((entry, index) => createPlaylistEntry(entry, index))
+    : [];
+  const entries =
+    explicitEntries.length ||
+    !trackIds.length
+      ? explicitEntries
+      : trackIds.map((trackId, index) =>
+          createPlaylistEntry(
+            {
+              trackId,
+              addedAt: playlist.updatedAt || playlist.createdAt || new Date().toISOString()
+            },
+            index
+          )
+        );
+
+  return {
+    id: playlist.id || randomUUID(),
+    name: String(playlist.name || playlist.title || '').trim() || 'Untitled Playlist',
+    description: String(playlist.description || '').trim(),
+    artworkUrl: playlist.artworkUrl || '',
+    artworkPath: playlist.artworkPath || '',
+    sourcePlatform: playlist.sourcePlatform || '',
+    sourcePlaylistId: playlist.sourcePlaylistId || '',
+    sourceUrl: playlist.sourceUrl || '',
+    sourceSnapshotId: playlist.sourceSnapshotId || '',
+    ownerName: playlist.ownerName || '',
+    importedAt: playlist.importedAt || '',
+    entries,
+    createdAt: playlist.createdAt || new Date().toISOString(),
+    updatedAt: playlist.updatedAt || new Date().toISOString()
+  };
+}
+
 class DataStore {
   constructor({ baseDir, defaultSettings }) {
     this.baseDir = baseDir;
@@ -196,26 +288,18 @@ class DataStore {
   }
 
   normaliseState(nextState) {
+    const tracks = Array.isArray(nextState.tracks)
+      ? nextState.tracks.map((track) => normaliseStoredTrack(track))
+      : [];
+
     return {
       settings: {
         ...this.defaultSettings,
         ...(nextState.settings || {})
       },
-      tracks: Array.isArray(nextState.tracks)
-        ? nextState.tracks.map((track) => ({
-            ...track,
-            artwork: track.artwork || '',
-            providerIds: normaliseProviderIds(track.providerIds)
-          }))
-        : [],
+      tracks,
       playlists: Array.isArray(nextState.playlists)
-        ? nextState.playlists.map((playlist) => ({
-            ...playlist,
-            description: playlist.description || '',
-            artworkUrl: playlist.artworkUrl || '',
-            artworkPath: playlist.artworkPath || '',
-            trackIds: Array.isArray(playlist.trackIds) ? playlist.trackIds : []
-          }))
+        ? nextState.playlists.map((playlist) => normalisePlaylistState(playlist))
         : [],
       downloads: Array.isArray(nextState.downloads) ? nextState.downloads : []
     };
@@ -356,7 +440,7 @@ class DataStore {
 
   listTracks({ query = '', page = 1, pageSize = 12 } = {}) {
     const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
-    const safePageSize = Math.min(50, Math.max(1, Number.parseInt(pageSize, 10) || 12));
+    const safePageSize = Math.min(10000, Math.max(1, Number.parseInt(pageSize, 10) || 12));
     const term = query.trim().toLowerCase();
 
     const filtered = this.state.tracks
@@ -365,9 +449,10 @@ class DataStore {
           return true;
         }
 
-        return [track.title, track.artist, track.album, track.filePath]
+        return [track.title, track.artist, track.album, track.genre, track.filePath]
+          .concat(Array.isArray(track.artists) ? track.artists : [])
           .filter(Boolean)
-          .some((value) => value.toLowerCase().includes(term));
+          .some((value) => String(value).toLowerCase().includes(term));
       })
       .sort((left, right) => {
         return new Date(right.addedAt || 0).getTime() - new Date(left.addedAt || 0).getTime();
@@ -395,65 +480,50 @@ class DataStore {
     return this.state.tracks.find((track) => isTrackEquivalent(track, candidate)) || null;
   }
 
-  async deleteTrack(trackId) {
-    const index = this.state.tracks.findIndex((track) => track.id === trackId);
-    if (index < 0) {
-      throw createHttpError(404, 'Track not found.');
-    }
-
-    const [removedTrack] = this.state.tracks.splice(index, 1);
-
+  attachTrackToPlaylists(track) {
     for (const playlist of this.state.playlists) {
-      const nextTrackIds = playlist.trackIds.filter((item) => item !== trackId);
-      if (nextTrackIds.length !== playlist.trackIds.length) {
-        playlist.trackIds = nextTrackIds;
+      let changed = false;
+      playlist.entries = playlist.entries.map((entry, index) => {
+        const nextEntry = createPlaylistEntry(entry, index);
+        if (!nextEntry.trackId && nextEntry.sourceTrack && isTrackEquivalent(nextEntry.sourceTrack, track)) {
+          nextEntry.trackId = track.id;
+          changed = true;
+        }
+        nextEntry.order = index;
+        return nextEntry;
+      });
+
+      if (changed) {
         playlist.updatedAt = new Date().toISOString();
       }
     }
+  }
 
-    await this.persist();
-
-    return {
-      ok: true,
-      id: trackId,
-      filePath: removedTrack.filePath || ''
-    };
+  linkPlaylistEntries(entries = []) {
+    return entries.map((entry, index) => {
+      const nextEntry = createPlaylistEntry(entry, index);
+      if (!nextEntry.trackId && nextEntry.sourceTrack) {
+        nextEntry.trackId = this.findMatchingTrack(nextEntry.sourceTrack)?.id || '';
+      }
+      nextEntry.order = index;
+      return nextEntry;
+    });
   }
 
   applyTrackUpsert(track) {
     const index = this.state.tracks.findIndex(
-      (existing) => existing.id === track.id || existing.filePath === track.filePath
+      (existing) => existing.id === track.id || (existing.filePath && existing.filePath === track.filePath)
     );
     const existingTrack = index >= 0 ? this.state.tracks[index] : null;
-    const hasProviderIds =
-      track.providerIds && Object.values(track.providerIds).some((value) => String(value || '').trim());
-    const nextTrack = {
-      id: track.id || (existingTrack ? existingTrack.id : randomUUID()),
-      title: track.title || 'Unknown Title',
-      artist: track.artist || 'Unknown Artist',
-      album: track.album || 'Singles',
-      duration: track.duration || null,
-      provider: track.provider || 'library',
-      artwork: typeof track.artwork === 'string' ? track.artwork : existingTrack?.artwork || '',
-      providerIds: hasProviderIds
-        ? normaliseProviderIds(track.providerIds)
-        : normaliseProviderIds(existingTrack?.providerIds),
-      sourceUrl: track.sourceUrl || '',
-      filePath: track.filePath,
-      fileName: path.basename(track.filePath),
-      addedAt: existingTrack ? existingTrack.addedAt : new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+    const nextTrack = normaliseStoredTrack(track, existingTrack);
 
     if (index >= 0) {
-      this.state.tracks[index] = {
-        ...this.state.tracks[index],
-        ...nextTrack
-      };
+      this.state.tracks[index] = nextTrack;
     } else {
       this.state.tracks.push(nextTrack);
     }
 
+    this.attachTrackToPlaylists(nextTrack);
     return nextTrack;
   }
 
@@ -473,17 +543,62 @@ class DataStore {
     return upsertedTracks;
   }
 
+  clearTrackFromPlaylistEntries(trackId) {
+    for (const playlist of this.state.playlists) {
+      const nextEntries = [];
+      let changed = false;
+
+      for (const entry of playlist.entries) {
+        if (entry.trackId !== trackId) {
+          nextEntries.push(entry);
+          continue;
+        }
+
+        if (entry.sourceTrack) {
+          nextEntries.push({
+            ...entry,
+            trackId: ''
+          });
+        }
+        changed = true;
+      }
+
+      if (changed) {
+        playlist.entries = nextEntries.map((entry, index) => createPlaylistEntry(entry, index));
+        playlist.updatedAt = new Date().toISOString();
+      }
+    }
+  }
+
+  async deleteTrack(trackId) {
+    const index = this.state.tracks.findIndex((track) => track.id === trackId);
+    if (index < 0) {
+      throw createHttpError(404, 'Track not found.');
+    }
+
+    const [removedTrack] = this.state.tracks.splice(index, 1);
+    this.clearTrackFromPlaylistEntries(trackId);
+    await this.persist();
+
+    return {
+      ok: true,
+      id: trackId,
+      filePath: removedTrack.filePath || ''
+    };
+  }
+
   async removeTracksMissingFromPaths(existingPaths) {
     const pathSet = new Set(existingPaths.map((item) => item.toLowerCase()));
+    const removedTrackIds = this.state.tracks
+      .filter((track) => !pathSet.has((track.filePath || '').toLowerCase()))
+      .map((track) => track.id);
+
     this.state.tracks = this.state.tracks.filter((track) =>
       pathSet.has((track.filePath || '').toLowerCase())
     );
 
-    for (const playlist of this.state.playlists) {
-      playlist.trackIds = playlist.trackIds.filter((trackId) =>
-        this.state.tracks.some((track) => track.id === trackId)
-      );
-      playlist.updatedAt = new Date().toISOString();
+    for (const trackId of removedTrackIds) {
+      this.clearTrackFromPlaylistEntries(trackId);
     }
 
     await this.persist();
@@ -514,40 +629,75 @@ class DataStore {
     return download;
   }
 
-  listPlaylists() {
-    return this.state.playlists.map((playlist) => this.getPlaylist(playlist.id)).filter(Boolean);
-  }
-
-  getPlaylist(playlistId) {
-    const playlist = this.state.playlists.find((item) => item.id === playlistId);
+  materializePlaylist(playlist) {
     if (!playlist) {
       return null;
     }
 
+    const entries = playlist.entries.map((entry, index) => {
+      const linkedTrack =
+        (entry.trackId && this.getTrack(entry.trackId)) ||
+        (entry.sourceTrack ? this.findMatchingTrack(entry.sourceTrack) : null);
+
+      return {
+        ...entry,
+        order: index,
+        trackId: linkedTrack?.id || entry.trackId || '',
+        track: linkedTrack || entry.sourceTrack || null
+      };
+    });
+
     return {
       ...playlist,
-      tracks: playlist.trackIds
-        .map((trackId) => this.getTrack(trackId))
-        .filter(Boolean)
+      entries,
+      tracks: entries.map((entry) => entry.track).filter(Boolean),
+      trackIds: entries.map((entry) => entry.trackId).filter(Boolean)
     };
   }
 
-  async createPlaylist({ name, description = '' }) {
+  listPlaylists() {
+    return this.state.playlists.map((playlist) => this.materializePlaylist(playlist)).filter(Boolean);
+  }
+
+  getPlaylist(playlistId) {
+    return this.materializePlaylist(this.state.playlists.find((item) => item.id === playlistId) || null);
+  }
+
+  async createPlaylist({
+    name,
+    description = '',
+    entries = [],
+    artworkUrl = '',
+    artworkPath = '',
+    sourcePlatform = '',
+    sourcePlaylistId = '',
+    sourceUrl = '',
+    sourceSnapshotId = '',
+    ownerName = '',
+    importedAt = ''
+  }) {
     const trimmedName = (name || '').trim();
     if (!trimmedName) {
       throw createHttpError(400, 'Playlist name is required.');
     }
 
-    const playlist = {
+    const playlist = normalisePlaylistState({
       id: randomUUID(),
       name: trimmedName,
-      description: description.trim(),
-      artworkUrl: '',
-      artworkPath: '',
-      trackIds: [],
+      description,
+      artworkUrl,
+      artworkPath,
+      sourcePlatform,
+      sourcePlaylistId,
+      sourceUrl,
+      sourceSnapshotId,
+      ownerName,
+      importedAt,
+      entries,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    });
+    playlist.entries = this.linkPlaylistEntries(playlist.entries);
 
     this.state.playlists.push(playlist);
     await this.persist();
@@ -585,6 +735,18 @@ class DataStore {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(updates, 'entries')) {
+      playlist.entries = Array.isArray(updates.entries)
+        ? this.linkPlaylistEntries(updates.entries)
+        : playlist.entries;
+    }
+
+    for (const field of ['sourcePlatform', 'sourcePlaylistId', 'sourceUrl', 'sourceSnapshotId', 'ownerName', 'importedAt']) {
+      if (Object.prototype.hasOwnProperty.call(updates, field)) {
+        playlist[field] = String(updates[field] || '').trim();
+      }
+    }
+
     playlist.updatedAt = new Date().toISOString();
     await this.persist();
     return this.getPlaylist(playlistId);
@@ -611,16 +773,38 @@ class DataStore {
       throw createHttpError(404, 'Playlist not found.');
     }
 
-    if (!this.getTrack(trackId)) {
+    const track = this.getTrack(trackId);
+    if (!track) {
       throw createHttpError(404, 'Track not found.');
     }
 
-    if (!playlist.trackIds.includes(trackId)) {
-      playlist.trackIds.push(trackId);
+    if (!playlist.entries.some((entry) => entry.trackId === trackId)) {
+      playlist.entries.push(
+        createPlaylistEntry(
+          {
+            trackId,
+            addedAt: new Date().toISOString()
+          },
+          playlist.entries.length
+        )
+      );
       playlist.updatedAt = new Date().toISOString();
       await this.persist();
     }
 
+    return this.getPlaylist(playlistId);
+  }
+
+  async replacePlaylistEntries(playlistId, entries = []) {
+    const playlist = this.state.playlists.find((item) => item.id === playlistId);
+    if (!playlist) {
+      throw createHttpError(404, 'Playlist not found.');
+    }
+
+    playlist.entries = entries.map((entry, index) => createPlaylistEntry(entry, index));
+    playlist.entries = this.linkPlaylistEntries(playlist.entries);
+    playlist.updatedAt = new Date().toISOString();
+    await this.persist();
     return this.getPlaylist(playlistId);
   }
 
@@ -630,7 +814,9 @@ class DataStore {
       throw createHttpError(404, 'Playlist not found.');
     }
 
-    playlist.trackIds = playlist.trackIds.filter((item) => item !== trackId);
+    playlist.entries = playlist.entries
+      .filter((item) => item.trackId !== trackId)
+      .map((entry, index) => createPlaylistEntry(entry, index));
     playlist.updatedAt = new Date().toISOString();
     await this.persist();
     return this.getPlaylist(playlistId);

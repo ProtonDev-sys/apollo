@@ -197,8 +197,16 @@ function formatItunesTrack(track) {
     provider: 'itunes',
     title: track.trackName || track.collectionName || 'Untitled',
     artist: track.artistName || 'Unknown Artist',
+    artists: track.artistName ? [track.artistName] : [],
     album: track.collectionName || 'iTunes',
+    albumArtist: track.collectionArtistName || track.artistName || '',
+    trackNumber: track.trackNumber || null,
+    discNumber: track.discNumber || null,
     duration: track.trackTimeMillis ? Math.round(track.trackTimeMillis / 1000) : null,
+    releaseDate: track.releaseDate || '',
+    releaseYear: track.releaseDate ? String(track.releaseDate).slice(0, 4) : '',
+    genre: track.primaryGenreName || '',
+    explicit: track.trackExplicitness || track.collectionExplicitness || '',
     metadataSource: 'itunes'
   });
 
@@ -207,14 +215,23 @@ function formatItunesTrack(track) {
     provider: 'itunes',
     title: normalized.title,
     artist: normalized.artist,
+    artists: normalized.artists,
     album: normalized.album,
+    albumArtist: normalized.albumArtist,
+    trackNumber: normalized.trackNumber,
+    discNumber: normalized.discNumber,
     duration: normalized.duration,
+    releaseDate: normalized.releaseDate,
+    releaseYear: normalized.releaseYear,
+    genre: normalized.genre,
+    explicit: normalized.explicit,
     artwork: track.artworkUrl100 || track.artworkUrl60 || '',
     externalUrl: track.trackViewUrl || track.collectionViewUrl || '',
     downloadTarget: buildYouTubeSearchTarget(normalized.artist, normalized.title),
     providerIds: createEmptyProviderIds({
       itunes: track.trackId || track.collectionId || ''
     }),
+    isrc: '',
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
     normalizedAlbum: normalized.normalizedAlbum,
@@ -228,8 +245,16 @@ function formatDeezerTrack(track) {
     provider: 'deezer',
     title: track.title || track.title_short || 'Untitled',
     artist: track.artist?.name || 'Unknown Artist',
+    artists: track.contributors?.map((artist) => artist.name).filter(Boolean) || [],
     album: track.album?.title || 'Deezer',
+    albumArtist: track.artist?.name || '',
+    trackNumber: track.track_position || track.trackPosition || null,
+    discNumber: track.disk_number || track.diskNumber || null,
     duration: track.duration || null,
+    releaseDate: track.release_date || track.releaseDate || '',
+    genre: track.genre?.name || track.genre || '',
+    explicit: track.explicit_lyrics,
+    isrc: track.isrc || '',
     metadataSource: 'deezer'
   });
 
@@ -238,8 +263,16 @@ function formatDeezerTrack(track) {
     provider: 'deezer',
     title: normalized.title,
     artist: normalized.artist,
+    artists: normalized.artists,
     album: normalized.album,
+    albumArtist: normalized.albumArtist,
+    trackNumber: normalized.trackNumber,
+    discNumber: normalized.discNumber,
     duration: normalized.duration,
+    releaseDate: normalized.releaseDate,
+    releaseYear: normalized.releaseYear,
+    genre: normalized.genre,
+    explicit: normalized.explicit,
     artwork:
       track.album?.cover_medium ||
       track.album?.cover ||
@@ -252,6 +285,7 @@ function formatDeezerTrack(track) {
       isrc: track.isrc || '',
       deezer: track.id || ''
     }),
+    isrc: normalized.isrc,
     normalizedTitle: normalized.normalizedTitle,
     normalizedArtist: normalized.normalizedArtist,
     normalizedAlbum: normalized.normalizedAlbum,
@@ -860,5 +894,10 @@ module.exports = {
   searchDeezerArtists,
   listDeezerArtistAlbums,
   listDeezerArtistTopTracks,
-  searchItunesArtistTracksByName
+  searchItunesArtistTracksByName,
+  formatItunesTrack,
+  formatDeezerTrack,
+  fetchCachedJson,
+  fetchJson,
+  buildYouTubeSearchTarget
 };
