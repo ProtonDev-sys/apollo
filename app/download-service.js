@@ -61,7 +61,7 @@ function buildRecordFromItem(item) {
     providerIds: item.providerIds || {},
     isrc: item.isrc || item.providerIds?.isrc || '',
     artwork: item.artwork || '',
-    sourceUrl: item.externalUrl || item.downloadTarget || '',
+    sourceUrl: item.sourceUrl || item.externalUrl || item.downloadTarget || '',
     status: 'queued',
     progress: 0,
     message: 'Waiting for worker...',

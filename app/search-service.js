@@ -1110,33 +1110,29 @@ async function resolveDownloadMetadata(input, settings) {
     ]);
     const payload = JSON.parse(stdout);
     const resolved = extractResolvedMetadata(payload, input.provider || 'link');
+    const mergedMetadata = mergeTrackMetadata(input, resolved);
 
     resolvedItem = {
       ...resolved,
       ...input,
-      provider: resolved.provider || input.provider || 'link',
-      sourcePlatform: resolved.provider || input.provider || input.sourcePlatform || 'link',
-      title: resolved.title || input.title || 'Untitled',
-      artist: resolved.artist || input.artist || 'Unknown Artist',
-      artists: input.artists || resolved.artists,
-      album: resolved.album || input.album || 'Singles',
-      albumArtist: resolved.albumArtist || input.albumArtist || resolved.artist || '',
-      trackNumber: resolved.trackNumber || input.trackNumber || null,
-      discNumber: resolved.discNumber || input.discNumber || null,
-      duration: resolved.duration || input.duration || null,
-      releaseDate: resolved.releaseDate || input.releaseDate || '',
-      releaseYear: resolved.releaseYear || input.releaseYear || null,
-      genre: resolved.genre || input.genre || '',
+      ...mergedMetadata,
+      provider: resolved.provider || input.provider || mergedMetadata.sourcePlatform || 'link',
+      sourcePlatform:
+        resolved.provider ||
+        input.sourcePlatform ||
+        input.provider ||
+        mergedMetadata.sourcePlatform ||
+        'link',
       explicit:
         input.explicit === null || input.explicit === undefined
-          ? resolved.explicit
+          ? mergedMetadata.explicit
           : input.explicit,
-      artwork: resolved.artwork || input.artwork || '',
+      artwork: mergedMetadata.artwork || '',
       externalUrl: resolved.externalUrl || input.externalUrl || target,
       sourceUrl: input.sourceUrl || resolved.sourceUrl || resolved.externalUrl || target,
       downloadTarget: input.downloadTarget || resolved.downloadTarget || target,
       providerIds: mergeProviderIds(resolved.providerIds, input.providerIds),
-      isrc: input.isrc || resolved.isrc || resolved.providerIds?.isrc || ''
+      isrc: input.isrc || mergedMetadata.isrc || resolved.providerIds?.isrc || ''
     };
   }
 
