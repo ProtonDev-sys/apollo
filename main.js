@@ -77,6 +77,12 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  mainWindow.on('minimize', (event) => {
+    if (keepRunningInBackground && !isQuitRequested) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
   mainWindow.on('close', (event) => {
     if (keepRunningInBackground && !isQuitRequested) {
       event.preventDefault();
@@ -182,9 +188,13 @@ function createTray() {
     return;
   }
 
-  tray = new Tray(createAppIcon(process.platform === 'win32' ? 16 : 24));
-  tray.on('click', () => createWindow());
-  updateTrayMenu();
+  try {
+    tray = new Tray(createAppIcon(process.platform === 'win32' ? 16 : 24));
+    tray.on('click', () => createWindow());
+    updateTrayMenu();
+  } catch (error) {
+    tray = null;
+  }
 }
 
 app.whenReady().then(async () => {
@@ -253,6 +263,14 @@ app.on('window-all-closed', () => {
 });
 
 ipcMain.handle('app:get-dashboard', async () => runtime.getDashboard());
+ipcMain.handle('app:hide-window', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+    return true;
+  }
+
+  return false;
+});
 ipcMain.handle('app:get-update-state', async () => updateService?.getState() || {});
 ipcMain.handle('app:check-for-updates', async () => updateService?.checkForUpdates() || {});
 ipcMain.handle('app:install-update', async () => updateService?.quitAndInstall() || false);

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('mediaApp', {
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
+  hideWindow: () => ipcRenderer.invoke('app:hide-window'),
   getUpdateState: () => ipcRenderer.invoke('app:get-update-state'),
   checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
   installUpdate: () => ipcRenderer.invoke('app:install-update'),

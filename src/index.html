@@ -13,155 +13,205 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="brand-block">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="16.5" cy="7.5" r="3.5" opacity="0.62"></circle>
-              <path d="M6.5 17.5c1.7-3.4 4.7-5.6 9-6.5"></path>
-              <path d="M12.5 18.5c.3-2.5 1.2-4.8 2.7-6.7"></path>
-            </svg>
-          </div>
-
-          <div class="brand-copy">
-            <span class="brand-kicker">Apollo</span>
-            <strong class="brand-title">Server Control</strong>
-          </div>
-        </div>
-
-        <label class="search-shell" for="global-search">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.44 4.44 1.41-1.41-4.44-4.44A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9.01 4.5 4.5 0 0 1 0-9.01Z"
-            ></path>
-          </svg>
-          <input id="global-search" type="text" autocomplete="off" placeholder="Search Apollo" />
-        </label>
-
-        <div class="topbar-actions">
-          <button class="secondary-button" type="button" data-action="check-updates">Updates</button>
-          <button class="secondary-button" type="button" data-action="rescan-library">Rescan</button>
-          <button class="secondary-button" type="button" data-action="open-library">Open Library</button>
-          <button class="primary-button" type="button" data-detail-tab="config">Config</button>
-        </div>
-      </header>
-
-      <div class="workspace">
-        <aside class="panel panel--sidebar">
-          <div class="panel-header panel-header--sidebar">
-            <div class="panel-heading">
-              <p class="panel-kicker">Runtime</p>
-              <h1 class="panel-title">Control</h1>
+    <div class="viewport-shell">
+      <div id="fit-root" class="app-shell">
+        <header class="topbar">
+          <div class="brand-block">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="16.5" cy="7.5" r="3.5" opacity="0.62"></circle>
+                <path d="M6.5 17.5c1.7-3.4 4.7-5.6 9-6.5"></path>
+                <path d="M12.5 18.5c.3-2.5 1.2-4.8 2.7-6.7"></path>
+              </svg>
             </div>
 
+            <div class="brand-copy">
+              <span class="brand-kicker">Apollo</span>
+              <strong class="brand-title">Server Config</strong>
+            </div>
+          </div>
+
+          <div class="topbar-status">
             <span id="server-badge" class="status-pill status-pill--warn">Booting</span>
+            <code id="server-url" class="endpoint-chip">Waiting for server...</code>
           </div>
 
-          <div class="panel-scroll">
-            <section class="sidebar-section">
-              <p class="sidebar-label">Server</p>
-              <code id="server-url" class="endpoint-chip">Waiting for server...</code>
-              <p id="status-banner" class="sidebar-copy">Loading server state.</p>
-
-              <div class="stats-grid" id="overview-grid">
-                <article class="stat-card">
-                  <span class="stat-label">Tracks</span>
-                  <strong id="stat-tracks">0</strong>
-                </article>
-                <article class="stat-card">
-                  <span class="stat-label">Playlists</span>
-                  <strong id="stat-playlists">0</strong>
-                </article>
-                <article class="stat-card">
-                  <span class="stat-label">Jobs</span>
-                  <strong id="stat-downloads">0</strong>
-                </article>
-                <article class="stat-card">
-                  <span class="stat-label">Done</span>
-                  <strong id="stat-complete">0</strong>
-                </article>
-              </div>
-            </section>
-
-            <section class="sidebar-section">
-              <div class="section-heading">
-                <p class="sidebar-label">Workspace</p>
-              </div>
-              <div id="view-switcher" class="view-switcher"></div>
-            </section>
-
-            <section class="sidebar-section">
-              <div class="section-heading">
-                <p class="sidebar-label">Playlists</p>
-              </div>
-
-              <form id="create-playlist-form" class="inline-form">
-                <input
-                  id="create-playlist-name"
-                  type="text"
-                  maxlength="80"
-                  placeholder="New playlist"
-                  autocomplete="off"
-                />
-                <button class="secondary-button" type="submit">Create</button>
-              </form>
-
-              <div id="playlist-list" class="playlist-list"></div>
-            </section>
-
-            <section class="sidebar-section">
-              <div class="section-heading">
-                <p class="sidebar-label">Dependencies</p>
-              </div>
-
-              <div id="dependency-summary" class="dependency-summary"></div>
-            </section>
+          <div class="topbar-actions">
+            <button class="secondary-button" type="button" data-action="hide-window">Hide</button>
+            <button class="secondary-button" type="button" data-action="open-library">Open Library</button>
+            <button class="primary-button" type="submit" form="settings-form">Save</button>
           </div>
-        </aside>
+        </header>
 
-        <main class="panel panel--main">
-          <div class="panel-header panel-header--main">
-            <div class="panel-heading">
-              <p id="main-kicker" class="panel-kicker">Library</p>
-              <h2 id="main-title" class="panel-title panel-title--hero">Catalog</h2>
+        <main class="page-shell">
+          <section class="hero-panel">
+            <div class="hero-copy">
+              <p class="panel-kicker">Server</p>
+              <h1 class="hero-title">Configure Apollo once, then let it stay out of the way.</h1>
+              <p id="status-banner" class="hero-text">Loading runtime state and configuration.</p>
             </div>
 
-            <div class="panel-meta-block">
-              <p id="main-meta" class="panel-meta"></p>
+            <div class="runtime-grid">
+              <article class="runtime-card">
+                <span class="runtime-label">Startup</span>
+                <strong id="runtime-startup">Off</strong>
+              </article>
+              <article class="runtime-card">
+                <span class="runtime-label">Auth</span>
+                <strong id="runtime-auth">Off</strong>
+              </article>
+              <article class="runtime-card">
+                <span class="runtime-label">Library</span>
+                <strong id="runtime-library">Unset</strong>
+              </article>
+              <article class="runtime-card">
+                <span class="runtime-label">Dependencies</span>
+                <strong id="runtime-dependencies">0/0</strong>
+              </article>
             </div>
-          </div>
+          </section>
 
-          <div class="panel-scroll panel-scroll--main">
-            <section id="main-hero" class="hero-shell"></section>
-            <section id="main-content" class="content-stack"></section>
-          </div>
+          <section class="summary-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Runtime</p>
+                  <h2 class="panel-title">Current server state</h2>
+                </div>
+              </div>
+              <div id="server-summary" class="stack-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Dependencies</p>
+                  <h2 class="panel-title">Setup checklist</h2>
+                </div>
+              </div>
+              <div id="dependency-list" class="stack-list"></div>
+            </article>
+          </section>
+
+          <section class="panel panel--form">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Configuration</p>
+                <h2 class="panel-title">Server configuration</h2>
+              </div>
+            </div>
+
+            <form id="settings-form" class="settings-form">
+              <section class="settings-group">
+                <div class="settings-group-head">
+                  <h3>Service behavior</h3>
+                  <p>Startup, background mode, and API access.</p>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field">
+                    <span class="field-label">Host</span>
+                    <input id="serverHost" type="text" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Port</span>
+                    <input id="serverPort" type="text" />
+                  </label>
+                  <label class="field field--wide field--toggle">
+                    <span class="field-toggle-copy">
+                      <strong>Start with system</strong>
+                      <span>Launch Apollo in hidden background mode after sign-in.</span>
+                    </span>
+                    <span class="toggle-shell">
+                      <input id="autoStartBackgroundServer" type="checkbox" />
+                      <span class="toggle-ui"></span>
+                    </span>
+                  </label>
+                  <label class="field field--wide field--toggle">
+                    <span class="field-toggle-copy">
+                      <strong>Require API auth</strong>
+                      <span>Protect API, streams, and artwork with a shared secret.</span>
+                    </span>
+                    <span class="toggle-shell">
+                      <input id="apiAuthEnabled" type="checkbox" />
+                      <span class="toggle-ui"></span>
+                    </span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Session TTL (hours)</span>
+                    <input id="apiSessionTtlHours" type="number" min="1" max="720" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">API shared secret</span>
+                    <input id="apiSharedSecret" type="password" placeholder="Leave blank to keep the current secret" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="settings-group">
+                <div class="settings-group-head">
+                  <h3>Storage</h3>
+                  <p>Where Apollo reads and stages media.</p>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field field--wide">
+                    <span class="field-label">Library directory</span>
+                    <div class="inline-field">
+                      <input id="libraryDirectory" type="text" />
+                      <button class="secondary-button" type="button" data-action="pick-directory" data-pick="libraryDirectory">Browse</button>
+                    </div>
+                  </label>
+                  <label class="field field--wide">
+                    <span class="field-label">Incoming directory</span>
+                    <div class="inline-field">
+                      <input id="incomingDirectory" type="text" />
+                      <button class="secondary-button" type="button" data-action="pick-directory" data-pick="incomingDirectory">Browse</button>
+                    </div>
+                  </label>
+                </div>
+              </section>
+
+              <section class="settings-group">
+                <div class="settings-group-head">
+                  <h3>Toolchain</h3>
+                  <p>Override binary discovery only when Apollo cannot find your installs automatically.</p>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field">
+                    <span class="field-label">yt-dlp path</span>
+                    <input id="ytDlpPath" type="text" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">ffmpeg path</span>
+                    <input id="ffmpegPath" type="text" />
+                  </label>
+                </div>
+              </section>
+
+              <section class="settings-group">
+                <div class="settings-group-head">
+                  <h3>Optional Spotify metadata</h3>
+                  <p>Only needed if you want Spotify-backed metadata or playlist import.</p>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field">
+                    <span class="field-label">Spotify client ID</span>
+                    <input id="spotifyClientId" type="text" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Spotify client secret</span>
+                    <input id="spotifyClientSecret" type="password" />
+                  </label>
+                </div>
+              </section>
+
+            </form>
+          </section>
         </main>
-
-        <aside class="panel panel--detail">
-          <div class="detail-tabs">
-            <button class="detail-tab is-active" type="button" data-detail-tab="details">
-              Details
-            </button>
-            <button class="detail-tab" type="button" data-detail-tab="config">Config</button>
-          </div>
-
-          <div id="detail-body" class="detail-body"></div>
-        </aside>
       </div>
-
-      <footer class="statusbar">
-        <div class="statusbar-copy">
-          <span class="statusbar-label">State</span>
-          <strong id="footer-status">Starting Apollo</strong>
-        </div>
-
-        <div class="statusbar-meta">
-          <span id="footer-update" class="footer-chip">Updates off</span>
-          <span id="footer-auth" class="footer-chip">Auth off</span>
-          <span id="footer-downloads" class="footer-chip">0 active jobs</span>
-        </div>
-      </footer>
     </div>
 
     <script src="./renderer.js"></script>
