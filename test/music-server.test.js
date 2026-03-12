@@ -56,6 +56,58 @@ async function sendJsonRequest({ port, method, path, body }) {
   });
 }
 
+async function sendEventStreamRequest({ port, path }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream'
+        }
+      },
+      (response) => {
+        let raw = '';
+        response.on('data', (chunk) => {
+          raw += chunk.toString();
+        });
+        response.on('end', () => {
+          const events = raw
+            .trim()
+            .split('\n\n')
+            .filter(Boolean)
+            .map((block) => {
+              const lines = block.split('\n');
+              const event = lines
+                .find((line) => line.startsWith('event: '))
+                ?.slice('event: '.length) || 'message';
+              const data = lines
+                .filter((line) => line.startsWith('data: '))
+                .map((line) => line.slice('data: '.length))
+                .join('\n');
+
+              return {
+                event,
+                data: data ? JSON.parse(data) : null
+              };
+            });
+
+          resolve({
+            statusCode: response.statusCode,
+            contentType: response.headers['content-type'],
+            events
+          });
+        });
+      }
+    );
+
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 test('music server exposes POST /api/resolve-shared-track', async () => {
   const port = await getFreePort();
   const calls = [];
@@ -90,6 +142,114 @@ test('music server exposes POST /api/resolve-shared-track', async () => {
     assert.deepEqual(calls, [{ id: 'deezer:3709069532' }]);
     assert.equal(response.body.id, 'deezer:3709069532');
     assert.equal(response.body.title, 'Resolved Song');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('music server can stream incremental search snapshots over SSE', async () => {
+  const port = await getFreePort();
+  const server = createMusicServer({
+    getAuthStatus: () => ({ enabled: false }),
+    searchCatalogStream: async function* () {
+      yield {
+        query: 'apollo',
+        provider: ['soundcloud', 'youtube'],
+        scope: 'remote',
+        library: {
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 10,
+          totalPages: 1
+        },
+        remote: {
+          items: [
+            {
+              id: 'soundcloud:1',
+              provider: 'soundcloud',
+              title: 'First Result'
+            }
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 10,
+          totalPages: 1,
+          providerErrors: {},
+          warning: '',
+          progress: {
+            complete: false,
+            completedProviders: ['soundcloud'],
+            pendingProviders: ['youtube'],
+            lastProvider: 'soundcloud',
+            lastStatus: 'fulfilled'
+          }
+        }
+      };
+
+      yield {
+        query: 'apollo',
+        provider: ['soundcloud', 'youtube'],
+        scope: 'remote',
+        library: {
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 10,
+          totalPages: 1
+        },
+        remote: {
+          items: [
+            {
+              id: 'soundcloud:1',
+              provider: 'soundcloud',
+              title: 'First Result'
+            },
+            {
+              id: 'youtube:2',
+              provider: 'youtube',
+              title: 'Second Result'
+            }
+          ],
+          total: 2,
+          page: 1,
+          pageSize: 10,
+          totalPages: 1,
+          providerErrors: {},
+          warning: '',
+          progress: {
+            complete: true,
+            completedProviders: ['soundcloud', 'youtube'],
+            pendingProviders: [],
+            lastProvider: 'youtube',
+            lastStatus: 'fulfilled'
+          }
+        }
+      };
+    }
+  });
+
+  try {
+    await server.start({
+      host: '127.0.0.1',
+      port
+    });
+
+    const response = await sendEventStreamRequest({
+      port,
+      path: '/api/search?query=apollo&scope=remote&provider=soundcloud,youtube&stream=1'
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(String(response.contentType || ''), /text\/event-stream/);
+    assert.deepEqual(
+      response.events.map((event) => event.event),
+      ['snapshot', 'done']
+    );
+    assert.equal(response.events[0].data.remote.items.length, 1);
+    assert.equal(response.events[0].data.remote.progress.complete, false);
+    assert.equal(response.events[1].data.remote.items.length, 2);
+    assert.equal(response.events[1].data.remote.progress.complete, true);
   } finally {
     await server.stop();
   }

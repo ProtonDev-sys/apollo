@@ -17,39 +17,9 @@ const NON_SONG_VIDEO_PATTERN =
   /\b(lyrics?|official video|video clip|reaction|karaoke|cover|live|sped up|slowed|nightcore|fanmade|fan-made)\b/i;
 const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
 const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
-const FAST_MULTI_PROVIDER_TIMEOUT_MS = 900;
 const SPOTIFY_TOKEN_EXPIRY_SKEW_MS = 30 * 1000;
 const spotifyTokenCache = new Map();
 const spotifyTokenInflight = new Map();
-
-function createTimeoutError(message) {
-  const error = new Error(message);
-  error.code = 'ETIMEDOUT';
-  return error;
-}
-
-function isTimeoutError(error) {
-  return Boolean(error && error.code === 'ETIMEDOUT');
-}
-
-function withTimeout(promise, timeoutMs, message) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(createTimeoutError(message));
-    }, timeoutMs);
-
-    promise.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      }
-    );
-  });
-}
 
 function isSpotifyTrackUrl(value) {
   return /^https?:\/\/open\.spotify\.com\/track\/[a-zA-Z0-9]+/i.test(String(value || '').trim());
@@ -812,6 +782,117 @@ async function searchSpotifyFallback(query, page, pageSize, settings, signal) {
   };
 }
 
+function createRemoteSearchResponse(
+  { items, warnings, providerErrors, providers, page, pageSize },
+  progress = null
+) {
+  const dedupedItems = dedupeRemoteItems(items);
+  const payload = {
+    items: dedupedItems,
+    total: dedupedItems.length,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(dedupedItems.length / pageSize)),
+    provider: providers,
+    providerErrors,
+    warning: warnings.join(' ')
+  };
+
+  if (progress) {
+    payload.progress = {
+      complete: Boolean(progress.complete),
+      completedProviders: [...progress.completedProviders],
+      pendingProviders: [...progress.pendingProviders],
+      lastProvider: progress.lastProvider || '',
+      lastStatus: progress.lastStatus || ''
+    };
+  }
+
+  return payload;
+}
+
+function createProviderSearchRequest(selectedProvider, trimmedQuery, safePage, safePageSize, settings, signal) {
+  if (selectedProvider === 'spotify') {
+    return searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
+  }
+
+  if (selectedProvider === 'itunes') {
+    return searchItunesTracks({
+      query: trimmedQuery,
+      page: safePage,
+      pageSize: safePageSize,
+      signal
+    });
+  }
+
+  if (selectedProvider === 'deezer') {
+    return searchDeezerTracks({
+      query: trimmedQuery,
+      page: safePage,
+      pageSize: safePageSize,
+      signal
+    });
+  }
+
+  return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
+}
+
+async function settleProviderSearchResult(
+  providerName,
+  result,
+  { fastMultiProviderMode, trimmedQuery, safePage, safePageSize, settings, signal }
+) {
+  if (result.status === 'fulfilled') {
+    return {
+      items: result.value.items,
+      warnings: [],
+      providerErrors: {}
+    };
+  }
+
+  if (isAbortError(result.reason)) {
+    throw result.reason;
+  }
+
+  const providerErrors = {
+    [providerName]: result.reason.message
+  };
+
+  if (providerName === 'spotify' && !fastMultiProviderMode) {
+    try {
+      const fallback = await searchSpotifyFallback(
+        trimmedQuery,
+        safePage,
+        safePageSize,
+        settings,
+        signal
+      );
+      return {
+        items: fallback.items,
+        warnings: [`spotify: ${result.reason.message} Falling back to YouTube audio results.`],
+        providerErrors
+      };
+    } catch (fallbackError) {
+      if (isAbortError(fallbackError)) {
+        throw fallbackError;
+      }
+
+      providerErrors.spotifyFallback = fallbackError.message;
+      return {
+        items: [],
+        warnings: [`spotify: ${result.reason.message}`, `spotify fallback: ${fallbackError.message}`],
+        providerErrors
+      };
+    }
+  }
+
+  return {
+    items: [],
+    warnings: [`${providerName}: ${result.reason.message}`],
+    providerErrors
+  };
+}
+
 async function searchProviders(
   { query, provider = 'all', page = 1, pageSize = 8 },
   settings,
@@ -835,38 +916,16 @@ async function searchProviders(
   const providers = parseProviderSelection(provider);
   const fastMultiProviderMode = providers.length > 1;
   const results = await Promise.allSettled(
-    providers.map((selectedProvider) => {
-      let request;
-      if (selectedProvider === 'spotify') {
-        request = searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
-      } else if (selectedProvider === 'itunes') {
-        request = searchItunesTracks({
-          query: trimmedQuery,
-          page: safePage,
-          pageSize: safePageSize,
-          signal
-        });
-      } else if (selectedProvider === 'deezer') {
-        request = searchDeezerTracks({
-          query: trimmedQuery,
-          page: safePage,
-          pageSize: safePageSize,
-          signal
-        });
-      } else {
-        request = searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
-      }
-
-      if (fastMultiProviderMode && ['spotify', 'youtube', 'soundcloud'].includes(selectedProvider)) {
-        return withTimeout(
-          request,
-          FAST_MULTI_PROVIDER_TIMEOUT_MS,
-          `${selectedProvider} search timed out after ${FAST_MULTI_PROVIDER_TIMEOUT_MS}ms.`
-        );
-      }
-
-      return request;
-    })
+    providers.map((selectedProvider) =>
+      createProviderSearchRequest(
+        selectedProvider,
+        trimmedQuery,
+        safePage,
+        safePageSize,
+        settings,
+        signal
+      )
+    )
   );
 
   const items = [];
@@ -875,56 +934,132 @@ async function searchProviders(
 
   for (const [index, result] of results.entries()) {
     const providerName = providers[index];
-    if (result.status === 'fulfilled') {
-      items.push(...result.value.items);
-      continue;
-    }
-
-    if (isAbortError(result.reason)) {
-      throw result.reason;
-    }
-
-    providerErrors[providerName] = result.reason.message;
-
-    if (providerName === 'spotify' && !fastMultiProviderMode && !isTimeoutError(result.reason)) {
-      try {
-        const fallback = await searchSpotifyFallback(
-          trimmedQuery,
-          safePage,
-          safePageSize,
-          settings,
-          signal
-        );
-        items.push(...fallback.items);
-        warnings.push(`spotify: ${result.reason.message} Falling back to YouTube audio results.`);
-        continue;
-      } catch (fallbackError) {
-        if (isAbortError(fallbackError)) {
-          throw fallbackError;
-        }
-
-        warnings.push(`spotify: ${result.reason.message}`);
-        warnings.push(`spotify fallback: ${fallbackError.message}`);
-        providerErrors.spotifyFallback = fallbackError.message;
-        continue;
-      }
-    }
-
-    warnings.push(`${providerName}: ${result.reason.message}`);
+    const settled = await settleProviderSearchResult(providerName, result, {
+      fastMultiProviderMode,
+      trimmedQuery,
+      safePage,
+      safePageSize,
+      settings,
+      signal
+    });
+    items.push(...settled.items);
+    warnings.push(...settled.warnings);
+    Object.assign(providerErrors, settled.providerErrors);
   }
 
-  const dedupedItems = dedupeRemoteItems(items);
-
-  return {
-    items: dedupedItems,
-    total: dedupedItems.length,
-    page: safePage,
-    pageSize: safePageSize,
-    totalPages: Math.max(1, Math.ceil(dedupedItems.length / safePageSize)),
-    provider: providers,
+  return createRemoteSearchResponse({
+    items,
+    warnings,
     providerErrors,
-    warning: warnings.join(' ')
-  };
+    providers,
+    page: safePage,
+    pageSize: safePageSize
+  });
+}
+
+async function* searchProvidersStream(
+  { query, provider = 'all', page = 1, pageSize = 8 },
+  settings,
+  { signal } = {}
+) {
+  const trimmedQuery = query.trim();
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
+  const providers = parseProviderSelection(provider);
+  const fastMultiProviderMode = providers.length > 1;
+
+  if (!trimmedQuery) {
+    yield createRemoteSearchResponse(
+      {
+        items: [],
+        warnings: [],
+        providerErrors: {},
+        providers,
+        page: 1,
+        pageSize
+      },
+      {
+        complete: true,
+        completedProviders: providers,
+        pendingProviders: [],
+        lastProvider: '',
+        lastStatus: 'fulfilled'
+      }
+    );
+    return;
+  }
+
+  const items = [];
+  const warnings = [];
+  const providerErrors = {};
+  const completedProviders = [];
+  const pendingProviders = [...providers];
+  const pendingSearches = providers.map((providerName) =>
+    createProviderSearchRequest(providerName, trimmedQuery, safePage, safePageSize, settings, signal).then(
+      (value) => ({
+        providerName,
+        result: {
+          status: 'fulfilled',
+          value
+        }
+      }),
+      (reason) => ({
+        providerName,
+        result: {
+          status: 'rejected',
+          reason
+        }
+      })
+    )
+  );
+
+  while (pendingSearches.length) {
+    const nextSettled = await Promise.race(
+      pendingSearches.map((pendingSearch, index) =>
+        pendingSearch.then((payload) => ({
+          index,
+          payload
+        }))
+      )
+    );
+    pendingSearches.splice(nextSettled.index, 1);
+
+    const { providerName, result } = nextSettled.payload;
+    const settled = await settleProviderSearchResult(providerName, result, {
+      fastMultiProviderMode,
+      trimmedQuery,
+      safePage,
+      safePageSize,
+      settings,
+      signal
+    });
+    items.push(...settled.items);
+    warnings.push(...settled.warnings);
+    Object.assign(providerErrors, settled.providerErrors);
+
+    completedProviders.push(providerName);
+    const remainingProviders = pendingProviders.filter((pendingProvider) => pendingProvider !== providerName);
+    pendingProviders.length = 0;
+    pendingProviders.push(...remainingProviders);
+
+    yield createRemoteSearchResponse(
+      {
+        items,
+        warnings,
+        providerErrors,
+        providers,
+        page: safePage,
+        pageSize: safePageSize
+      },
+      {
+        complete: pendingProviders.length === 0,
+        completedProviders,
+        pendingProviders,
+        lastProvider: providerName,
+        lastStatus: result.status
+      }
+    );
+  }
 }
 
 async function inspectDirectLink(url, settings, { signal } = {}) {
@@ -1003,6 +1138,95 @@ async function searchCatalog(payload, settings, store, baseUrl, { signal } = {})
     library,
     remote
   };
+}
+
+async function* searchCatalogStream(payload, settings, store, baseUrl, { signal } = {}) {
+  const query = payload.query || '';
+  const page = Math.max(1, Number.parseInt(payload.page, 10) || 1);
+  const pageSize = Math.min(20, Math.max(1, Number.parseInt(payload.pageSize, 10) || 8));
+  const scope = payload.scope || 'all';
+  const providers = parseProviderSelection(payload.provider || 'all');
+  const library =
+    scope === 'remote'
+      ? {
+          items: [],
+          total: 0,
+          page,
+          pageSize,
+          totalPages: 1
+        }
+      : (() => {
+          const result = store.listTracks({ query, page, pageSize });
+          return {
+            ...result,
+            items: result.items.map((track) => formatApiTrack(track, baseUrl))
+          };
+        })();
+
+  if (scope === 'library') {
+    yield {
+      query,
+      provider: providers,
+      scope,
+      library,
+      remote: createRemoteSearchResponse(
+        {
+          items: [],
+          warnings: [],
+          providerErrors: {},
+          providers,
+          page,
+          pageSize
+        },
+        {
+          complete: true,
+          completedProviders: [],
+          pendingProviders: [],
+          lastProvider: '',
+          lastStatus: 'fulfilled'
+        }
+      )
+    };
+    return;
+  }
+
+  yield {
+    query,
+    provider: providers,
+    scope,
+    library,
+    remote: createRemoteSearchResponse(
+      {
+        items: [],
+        warnings: [],
+        providerErrors: {},
+        providers,
+        page,
+        pageSize
+      },
+      {
+        complete: false,
+        completedProviders: [],
+        pendingProviders: [...providers],
+        lastProvider: '',
+        lastStatus: ''
+      }
+    )
+  };
+
+  for await (const remote of searchProvidersStream(
+    { query, provider: providers, page, pageSize },
+    settings,
+    { signal }
+  )) {
+    yield {
+      query,
+      provider: providers,
+      scope,
+      library,
+      remote
+    };
+  }
 }
 
 async function resolveRemoteMedia(input, settings, { signal } = {}) {
@@ -1187,9 +1411,10 @@ async function resolvePlayback(input, settings, store, baseUrl, { signal } = {})
   }
 
   const resolved = await resolveRemoteMedia(input, settings, { signal });
+  const proxyUrl = `${String(baseUrl || '').replace(/\/$/, '')}/api/playback-proxy?source=${encodeURIComponent(resolved.directUrl)}`;
   return {
     type: 'remote',
-    streamUrl: resolved.directUrl,
+    streamUrl: proxyUrl,
     downloadUrl: resolved.directUrl,
     title: input.title || 'Untitled',
     artist: input.artist || 'Unknown Artist',
@@ -1229,6 +1454,7 @@ module.exports = {
   searchProviders,
   inspectDirectLink,
   searchCatalog,
+  searchCatalogStream,
   resolveDownloadMetadata,
   resolvePlayback,
   resolveClientDownload,

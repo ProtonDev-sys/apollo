@@ -4,122 +4,165 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Apollo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="page">
-      <section class="section">
-        <div class="section-head">
-          <h2>Status</h2>
-          <span id="server-badge" class="status-pill warn">Starting</span>
-        </div>
-        <div class="stack">
-          <p id="status-banner" class="muted">
-            Loading server state and dependency checks.
-          </p>
-          <div class="row">
-            <span class="label">API base URL</span>
-            <code id="server-url">Waiting for server...</code>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="16.5" cy="7.5" r="3.5" opacity="0.62"></circle>
+              <path d="M6.5 17.5c1.7-3.4 4.7-5.6 9-6.5"></path>
+              <path d="M12.5 18.5c.3-2.5 1.2-4.8 2.7-6.7"></path>
+            </svg>
           </div>
-          <div class="stats">
-            <article class="stat">
-              <span class="label">Tracks</span>
-              <strong id="stat-tracks">0</strong>
-            </article>
-            <article class="stat">
-              <span class="label">Playlists</span>
-              <strong id="stat-playlists">0</strong>
-            </article>
-            <article class="stat">
-              <span class="label">Jobs</span>
-              <strong id="stat-downloads">0</strong>
-            </article>
-            <article class="stat">
-              <span class="label">Completed</span>
-              <strong id="stat-complete">0</strong>
-            </article>
-          </div>
-        </div>
-      </section>
 
-      <section class="section">
-        <div class="section-head">
-          <h2>Config</h2>
-          <div class="actions">
-            <button id="open-library-folder" class="button button-ghost">Open Library</button>
-            <button id="save-settings" class="button button-primary">Save</button>
+          <div class="brand-copy">
+            <span class="brand-kicker">Apollo</span>
+            <strong class="brand-title">Server Control</strong>
           </div>
         </div>
 
-        <div class="form-grid">
-          <label class="field">
-            <span>Host</span>
-            <input id="serverHost" type="text" />
-          </label>
-          <label class="field">
-            <span>Port</span>
-            <input id="serverPort" type="text" />
-          </label>
-          <label class="field">
-            <span>Require API auth</span>
-            <input id="apiAuthEnabled" type="checkbox" />
-          </label>
-          <label class="field">
-            <span>Session TTL (hours)</span>
-            <input id="apiSessionTtlHours" type="number" min="1" max="720" />
-          </label>
-          <label class="field">
-            <span>Start server on login</span>
-            <input id="autoStartBackgroundServer" type="checkbox" />
-          </label>
-          <label class="field full-width">
-            <span>Library directory</span>
-            <div class="inline-field">
-              <input id="libraryDirectory" type="text" />
-              <button data-pick="libraryDirectory" class="button button-ghost pick-dir">Browse</button>
+        <label class="search-shell" for="global-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M10.5 4a6.5 6.5 0 1 0 4.03 11.6l4.44 4.44 1.41-1.41-4.44-4.44A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9.01 4.5 4.5 0 0 1 0-9.01Z"
+            ></path>
+          </svg>
+          <input id="global-search" type="text" autocomplete="off" placeholder="Search Apollo" />
+        </label>
+
+        <div class="topbar-actions">
+          <button class="secondary-button" type="button" data-action="check-updates">Updates</button>
+          <button class="secondary-button" type="button" data-action="rescan-library">Rescan</button>
+          <button class="secondary-button" type="button" data-action="open-library">Open Library</button>
+          <button class="primary-button" type="button" data-detail-tab="config">Config</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="panel panel--sidebar">
+          <div class="panel-header panel-header--sidebar">
+            <div class="panel-heading">
+              <p class="panel-kicker">Runtime</p>
+              <h1 class="panel-title">Control</h1>
             </div>
-          </label>
-          <label class="field full-width">
-            <span>Incoming downloads directory</span>
-            <div class="inline-field">
-              <input id="incomingDirectory" type="text" />
-              <button data-pick="incomingDirectory" class="button button-ghost pick-dir">Browse</button>
+
+            <span id="server-badge" class="status-pill status-pill--warn">Booting</span>
+          </div>
+
+          <div class="panel-scroll">
+            <section class="sidebar-section">
+              <p class="sidebar-label">Server</p>
+              <code id="server-url" class="endpoint-chip">Waiting for server...</code>
+              <p id="status-banner" class="sidebar-copy">Loading server state.</p>
+
+              <div class="stats-grid" id="overview-grid">
+                <article class="stat-card">
+                  <span class="stat-label">Tracks</span>
+                  <strong id="stat-tracks">0</strong>
+                </article>
+                <article class="stat-card">
+                  <span class="stat-label">Playlists</span>
+                  <strong id="stat-playlists">0</strong>
+                </article>
+                <article class="stat-card">
+                  <span class="stat-label">Jobs</span>
+                  <strong id="stat-downloads">0</strong>
+                </article>
+                <article class="stat-card">
+                  <span class="stat-label">Done</span>
+                  <strong id="stat-complete">0</strong>
+                </article>
+              </div>
+            </section>
+
+            <section class="sidebar-section">
+              <div class="section-heading">
+                <p class="sidebar-label">Workspace</p>
+              </div>
+              <div id="view-switcher" class="view-switcher"></div>
+            </section>
+
+            <section class="sidebar-section">
+              <div class="section-heading">
+                <p class="sidebar-label">Playlists</p>
+              </div>
+
+              <form id="create-playlist-form" class="inline-form">
+                <input
+                  id="create-playlist-name"
+                  type="text"
+                  maxlength="80"
+                  placeholder="New playlist"
+                  autocomplete="off"
+                />
+                <button class="secondary-button" type="submit">Create</button>
+              </form>
+
+              <div id="playlist-list" class="playlist-list"></div>
+            </section>
+
+            <section class="sidebar-section">
+              <div class="section-heading">
+                <p class="sidebar-label">Dependencies</p>
+              </div>
+
+              <div id="dependency-summary" class="dependency-summary"></div>
+            </section>
+          </div>
+        </aside>
+
+        <main class="panel panel--main">
+          <div class="panel-header panel-header--main">
+            <div class="panel-heading">
+              <p id="main-kicker" class="panel-kicker">Library</p>
+              <h2 id="main-title" class="panel-title panel-title--hero">Catalog</h2>
             </div>
-          </label>
-          <label class="field">
-            <span>`yt-dlp` path</span>
-            <input id="ytDlpPath" type="text" />
-          </label>
-          <label class="field">
-            <span>`ffmpeg` path</span>
-            <input id="ffmpegPath" type="text" />
-          </label>
-          <label class="field">
-            <span>Spotify client ID</span>
-            <input id="spotifyClientId" type="text" />
-          </label>
-          <label class="field">
-            <span>API shared secret</span>
-            <input id="apiSharedSecret" type="password" placeholder="Leave blank to keep current secret" />
-          </label>
-          <label class="field">
-            <span>Spotify client secret</span>
-            <input id="spotifyClientSecret" type="password" />
-          </label>
+
+            <div class="panel-meta-block">
+              <p id="main-meta" class="panel-meta"></p>
+            </div>
+          </div>
+
+          <div class="panel-scroll panel-scroll--main">
+            <section id="main-hero" class="hero-shell"></section>
+            <section id="main-content" class="content-stack"></section>
+          </div>
+        </main>
+
+        <aside class="panel panel--detail">
+          <div class="detail-tabs">
+            <button class="detail-tab is-active" type="button" data-detail-tab="details">
+              Details
+            </button>
+            <button class="detail-tab" type="button" data-detail-tab="config">Config</button>
+          </div>
+
+          <div id="detail-body" class="detail-body"></div>
+        </aside>
+      </div>
+
+      <footer class="statusbar">
+        <div class="statusbar-copy">
+          <span class="statusbar-label">State</span>
+          <strong id="footer-status">Starting Apollo</strong>
         </div>
 
-        <div class="actions top-gap">
-          <button id="rescan-library" class="button button-ghost">Rescan Library</button>
+        <div class="statusbar-meta">
+          <span id="footer-update" class="footer-chip">Updates off</span>
+          <span id="footer-auth" class="footer-chip">Auth off</span>
+          <span id="footer-downloads" class="footer-chip">0 active jobs</span>
         </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head">
-          <h2>Dependencies</h2>
-        </div>
-        <div id="dependency-grid" class="simple-list"></div>
-      </section>
-    </main>
+      </footer>
+    </div>
 
     <script src="./renderer.js"></script>
   </body>

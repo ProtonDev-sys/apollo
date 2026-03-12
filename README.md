@@ -2,9 +2,10 @@
 
 Apollo is a local music server for personal client apps. It ships with:
 
-- a minimal Electron config UI
+- a desktop Electron control UI
 - a headless CLI that runs the same server stack
 - a shared config file used by both UI and CLI
+- Windows and Linux packaging targets for easy distribution
 
 ## Highlights
 
@@ -127,7 +128,7 @@ npm.cmd run config:path
 
 ### 6. Optional background start on login
 
-On Windows, Apollo can start the server automatically when the user signs in.
+Apollo can start the server automatically when the user signs in.
 
 Setup in the UI:
 
@@ -137,18 +138,102 @@ Setup in the UI:
 
 How it works:
 
-- Apollo writes a launcher into the user Startup folder
-- Windows starts Apollo in hidden `--background` mode on login
+- Windows packaged builds register Apollo as a login item and start it in hidden `--background` mode
+- development builds fall back to the user Startup folder helper
+- Linux desktop sessions install an XDG autostart entry that launches Apollo in hidden `--background` mode
 - the server runs without opening the UI window
 
 Notes:
 
-- this is Windows-only
 - when enabled, closing the UI window keeps Apollo running in the background
 - opening Apollo again reuses the background instance instead of starting a second server
 - to stop background mode completely, open Apollo, turn `Start server on login` off, click `Save`, then close the app
 
-### 7. Optional API authentication
+### 7. Installer builds
+
+Apollo now includes packaging targets through `electron-builder`.
+
+Build all desktop artifacts:
+
+```powershell
+npm.cmd run dist
+```
+
+Build Windows installers only:
+
+```powershell
+npm.cmd run dist:win
+```
+
+Build a portable Windows executable:
+
+```powershell
+npm.cmd run dist:portable
+```
+
+Build Linux packages only:
+
+```powershell
+npm.cmd run dist:linux
+```
+
+Build output goes to `dist/`.
+
+Current targets:
+
+- Windows: `nsis` installer and `portable`
+- Linux: `AppImage` and `deb`
+
+### 7.1 Background mode and tray behavior
+
+Apollo now keeps a tray icon alive while the background server is enabled.
+
+- closing the main window hides Apollo instead of quitting when background mode is on
+- the tray menu can reopen Apollo, open the library folder, toggle `Start with system`, check for updates, and quit cleanly
+- Windows packaged builds use the native login-item integration
+- Linux desktop builds use XDG autostart when `Start server on login` is enabled
+
+### 7.2 Auto-update feed
+
+Apollo now includes `electron-updater` wiring for packaged builds and is configured to use GitHub Releases for this repository by default.
+
+For local release publishing:
+
+```powershell
+$env:GH_TOKEN = "github-personal-access-token"
+npm.cmd run release:win
+```
+
+That publishes the Windows installer artifacts to the `ProtonDev-sys/apollo` GitHub releases feed.
+
+Packaged Apollo builds then use that GitHub feed automatically. You can still override the feed URL with:
+
+```powershell
+$env:APOLLO_UPDATE_URL = "https://your-domain.example/apollo"
+```
+
+Apollo exposes update checks through both the UI and the tray menu.
+
+Linux background service helper:
+
+Use the user-service helper if you want Apollo managed by `systemd --user` instead of desktop-session autostart:
+
+```bash
+npm run linux:service:install -- --exec /absolute/path/to/apollo
+```
+
+Remove it with:
+
+```bash
+npm run linux:service:remove
+```
+
+If you want branded installers, add installer assets under `build/`, such as:
+
+- `build/icon.ico` for Windows
+- `build/icon.png` for Linux
+
+### 8. Optional API authentication
 
 Apollo can require one shared secret for all API, stream, and playlist artwork requests. There are no user accounts.
 
@@ -242,7 +327,7 @@ Notes:
 npm.cmd start
 ```
 
-If `Start server on login` is enabled, Windows launches Apollo in hidden background mode at sign-in and the UI window stays closed until you open the app manually.
+If `Start server on login` is enabled, Apollo launches in hidden background mode at sign-in and the UI window stays closed until you open the app manually.
 
 ## Run headless
 
@@ -293,7 +378,7 @@ General notes:
 - library rescans batch catalog writes instead of persisting each discovered file individually
 - library rescans read embedded file tags and try to repair weak stored metadata from the original source when possible
 - MusicBrainz-backed artist requests are throttled and cached because MusicBrainz documents a 1 request/second rate limit
-- multi-provider search favors fast cold responses; slower providers may time out in `provider=all` so the API can return under budget
+- multi-provider search fans out across the requested providers in parallel unless the client disconnects or a newer request from the same client supersedes the older one
 - artist search results are enriched with Deezer artwork and top releases when possible to reduce client follow-up calls
 - pagination is 1-based
 - `pageSize` is capped internally for search and track listing
@@ -459,6 +544,7 @@ Query params:
 - `query` or `q`: search term
 - `scope`: `all`, `library`, or `remote`
 - `provider`: `all`, `youtube`, `soundcloud`, `spotify`, `itunes`, or `deezer`
+- `stream`: optional, set to `1` to stream partial results over Server-Sent Events
 - `clientId`: optional fallback for client identification if you cannot send `X-Client-Id`
 - `page`: optional, default `1`
 - `pageSize`: optional, default `20`
@@ -527,13 +613,15 @@ Notes:
 
 - `library.items` contain downloaded tracks formatted for playback through Apollo
 - `remote.items` contain provider results that can be played directly or queued for download
+- `stream=1` or `Accept: text/event-stream` switches the endpoint to SSE mode and emits `snapshot` events as providers finish, followed by a final `done` event
+- SSE search snapshots include `remote.progress.complete`, `remote.progress.completedProviders`, `remote.progress.pendingProviders`, `remote.progress.lastProvider`, and `remote.progress.lastStatus`
 - if the same client sends a newer search before the previous one completes, Apollo cancels the older search and keeps the newer one
 - different `X-Client-Id` values are isolated, so one client does not cancel another client's search
 - Apollo keeps a short in-memory cache of recent identical searches to avoid repeating provider work
 - duplicate remote results from fallback/provider overlap are collapsed into a single best result
 - `itunes` is the built-in no-key metadata provider for general song search
 - `deezer` is another no-key fast metadata provider for cold search
-- in `provider=all`, Apollo applies tight deadlines to slower providers to keep the response fast; request `provider=youtube`, `provider=soundcloud`, or `provider=spotify` directly when you want those slower searches explicitly
+- multi-provider search fans out to each selected provider in parallel unless the client disconnects or a newer search from the same client supersedes it
 - Spotify track URLs work through `query=<spotify track url>` or `POST /api/inspect-link`
 - if Spotify catalog search is blocked by Spotify, Apollo falls back to YouTube audio results and returns the original Spotify failure in `remote.providerErrors.spotify`
 - `provider=all` includes `spotify`, `youtube`, `soundcloud`, `itunes`, and `deezer`

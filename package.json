@@ -10,6 +10,15 @@
     "start": "electron .",
     "start:ui": "electron .",
     "start:cli": "node cli.js start",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable -c.artifactName=Apollo-Portable-${version}-${os}-${arch}.${ext}",
+    "dist:linux": "electron-builder --linux AppImage deb",
+    "release:win": "electron-builder --win nsis --publish always",
+    "release:linux": "electron-builder --linux AppImage deb --publish always",
+    "linux:service:install": "node scripts/install-linux-service.js install",
+    "linux:service:remove": "node scripts/install-linux-service.js remove",
     "test": "node --test",
     "config:path": "node cli.js config-path",
     "config:print": "node cli.js print-config"
@@ -21,9 +30,77 @@
     "cli",
     "yt-dlp"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ProtonDev-sys/apollo.git"
+  },
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
   "devDependencies": {
-    "electron": "^37.0.0"
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.proton.apollo",
+    "productName": "Apollo",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "app/**/*",
+      "src/**/*",
+      "main.js",
+      "preload.js",
+      "cli.js",
+      "package.json"
+    ],
+    "asar": true,
+    "electronUpdaterCompatibility": ">=2.16",
+    "executableName": "apollo",
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Apollo",
+      "runAfterFinish": true
+    },
+    "linux": {
+      "category": "AudioVideo",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "desktop": {
+        "entry": {
+          "Name": "Apollo",
+          "Comment": "Apollo music server control panel",
+          "Categories": "AudioVideo;Audio;Network;",
+          "StartupWMClass": "Apollo"
+        }
+      }
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "ProtonDev-sys",
+      "repo": "apollo"
+    }
   }
 }

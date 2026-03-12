@@ -7,6 +7,7 @@ const {
   searchProviders,
   inspectDirectLink,
   searchCatalog,
+  searchCatalogStream,
   resolvePlayback,
   resolveClientDownload
 } = require('./search-service');
@@ -178,6 +179,8 @@ async function createRuntime({
       libraryService.deleteTrack(trackId, store.getSettings().libraryDirectory),
     searchCatalog: (payload, options = {}) =>
       searchCatalog(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
+    searchCatalogStream: (payload, options = {}) =>
+      searchCatalogStream(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
     resolvePlayback: (payload, options = {}) =>
       resolvePlayback(payload, store.getSettings(), store, musicServer.getInfo().baseUrl, options),
     resolveClientDownload: (payload, options = {}) =>

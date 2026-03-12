@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('mediaApp', {
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
+  getUpdateState: () => ipcRenderer.invoke('app:get-update-state'),
+  checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+  installUpdate: () => ipcRenderer.invoke('app:install-update'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   pickDirectory: () => ipcRenderer.invoke('settings:pick-directory'),
   search: (payload) => ipcRenderer.invoke('search:run', payload),
@@ -18,5 +21,10 @@ contextBridge.exposeInMainWorld('mediaApp', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('downloads:update', listener);
     return () => ipcRenderer.removeListener('downloads:update', listener);
+  },
+  onUpdateState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app:update-state', listener);
+    return () => ipcRenderer.removeListener('app:update-state', listener);
   }
 });

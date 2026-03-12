@@ -78,7 +78,7 @@ class SearchCoordinator {
     }
   }
 
-  async runSearch({ clientKey, cacheKey, requestSignal = null, execute }) {
+  beginSearch({ clientKey, cacheKey, requestSignal = null }) {
     const previousSearch = this.activeSearches.get(clientKey);
     if (previousSearch) {
       previousSearch.controller.abort(
@@ -88,31 +88,67 @@ class SearchCoordinator {
 
     const cached = this.getCached(cacheKey);
     if (cached) {
-      return cached;
+      return {
+        cached,
+        entry: null,
+        signal: requestSignal
+      };
     }
 
     const controller = new AbortController();
     const signal = requestSignal ? AbortSignal.any([controller.signal, requestSignal]) : controller.signal;
     const entry = {
-      controller,
-      cacheKey
+      clientKey,
+      cacheKey,
+      controller
     };
 
     this.activeSearches.set(clientKey, entry);
+    return {
+      cached: null,
+      entry,
+      signal
+    };
+  }
+
+  finishSearch(entry, payload) {
+    if (!entry) {
+      return cloneSearchResult(payload);
+    }
+
+    if (this.activeSearches.get(entry.clientKey) !== entry) {
+      throw createAbortError('Search superseded by a newer request from the same client.');
+    }
+
+    this.setCached(entry.cacheKey, payload);
+    return cloneSearchResult(payload);
+  }
+
+  releaseSearch(entry) {
+    if (!entry) {
+      return;
+    }
+
+    if (this.activeSearches.get(entry.clientKey) === entry) {
+      this.activeSearches.delete(entry.clientKey);
+    }
+  }
+
+  async runSearch({ clientKey, cacheKey, requestSignal = null, execute }) {
+    const { cached, entry, signal } = this.beginSearch({
+      clientKey,
+      cacheKey,
+      requestSignal
+    });
+    if (cached) {
+      return cached;
+    }
 
     try {
       const result = await execute({ signal });
-
-      if (this.activeSearches.get(clientKey) !== entry) {
-        throw createAbortError('Search superseded by a newer request from the same client.');
-      }
-
-      this.setCached(cacheKey, result);
-      return cloneSearchResult(result);
+      return this.finishSearch(entry, result);
     } finally {
-      if (this.activeSearches.get(clientKey) === entry) {
-        this.activeSearches.delete(clientKey);
-      }
+      this.releaseSearch(entry);
     }
   }
 }

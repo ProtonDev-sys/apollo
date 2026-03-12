@@ -1,6 +1,7 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { Readable } = require('stream');
 const { pipeline } = require('stream');
 const { URL } = require('url');
 const { createAbortError, createHttpError, isAbortError } = require('./http-error');
@@ -56,6 +57,38 @@ function sendJson(response, statusCode, payload) {
     'Content-Type': 'application/json'
   });
   response.end(JSON.stringify(payload));
+}
+
+function startEventStream(response) {
+  if (isResponseClosed(response)) {
+    return;
+  }
+
+  setCorsHeaders(response);
+  response.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  response.flushHeaders?.();
+}
+
+function sendEventStreamMessage(response, eventName, payload) {
+  if (isResponseClosed(response)) {
+    return;
+  }
+
+  if (eventName) {
+    response.write(`event: ${eventName}\n`);
+  }
+
+  const serializedPayload = JSON.stringify(payload);
+  for (const line of serializedPayload.split(/\r?\n/)) {
+    response.write(`data: ${line}\n`);
+  }
+
+  response.write('\n');
 }
 
 function sendNoContent(response) {
@@ -206,6 +239,76 @@ function serveStaticFile(request, response, filePath) {
     'Cache-Control': 'public, max-age=60'
   });
   pipeFileStream(request, response, filePath);
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function streamRemotePlayback(request, response, sourceUrl, abortSignal) {
+  if (!isHttpUrl(sourceUrl)) {
+    throw createHttpError(400, 'Remote playback proxy requires an http or https URL.');
+  }
+
+  const upstreamHeaders = {};
+  if (request.headers.range) {
+    upstreamHeaders.range = request.headers.range;
+  }
+  if (request.headers['user-agent']) {
+    upstreamHeaders['user-agent'] = request.headers['user-agent'];
+  }
+  if (request.headers.accept) {
+    upstreamHeaders.accept = request.headers.accept;
+  }
+
+  const upstreamResponse = await fetch(sourceUrl, {
+    headers: upstreamHeaders,
+    redirect: 'follow',
+    signal: abortSignal
+  });
+  if (!upstreamResponse.ok && upstreamResponse.status !== 206) {
+    throw createHttpError(upstreamResponse.status || 502, `Remote playback proxy failed with status ${upstreamResponse.status || 502}.`);
+  }
+  if (!upstreamResponse.body) {
+    throw createHttpError(502, 'Remote playback proxy did not receive an audio stream.');
+  }
+
+  setCorsHeaders(response);
+  response.statusCode = upstreamResponse.status;
+  const forwardHeaders = [
+    'content-type',
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'cache-control',
+    'etag',
+    'last-modified'
+  ];
+  for (const headerName of forwardHeaders) {
+    const headerValue = upstreamResponse.headers.get(headerName);
+    if (headerValue) {
+      response.setHeader(headerName, headerValue);
+    }
+  }
+  response.flushHeaders?.();
+
+  const upstreamStream = Readable.fromWeb(upstreamResponse.body);
+  const destroyStream = () => {
+    upstreamStream.destroy();
+  };
+
+  request.once('close', destroyStream);
+  response.once('close', destroyStream);
+
+  pipeline(upstreamStream, response, () => {
+    request.off('close', destroyStream);
+    response.off('close', destroyStream);
+  });
 }
 
 function streamTrack(request, response, track, requestUrl) {
@@ -517,6 +620,9 @@ function createMusicServer(services) {
           page: requestUrl.searchParams.get('page') || '1',
           pageSize: requestUrl.searchParams.get('pageSize') || '20'
         };
+        const wantsStreamingSearch =
+          requestUrl.searchParams.get('stream') === '1' ||
+          String(request.headers.accept || '').includes('text/event-stream');
         const clientKey = searchCoordinator.resolveClientKey({
           request,
           requestUrl,
@@ -528,6 +634,49 @@ function createMusicServer(services) {
         );
 
         try {
+          if (wantsStreamingSearch) {
+            startEventStream(response);
+            const cacheKey = searchCoordinator.createCacheKey(payload);
+            const startedSearch = searchCoordinator.beginSearch({
+              clientKey,
+              cacheKey,
+              requestSignal: requestAbort.signal
+            });
+
+            let finalSnapshot = startedSearch.cached;
+            if (startedSearch.cached) {
+              sendEventStreamMessage(response, 'snapshot', startedSearch.cached);
+              sendEventStreamMessage(response, 'done', startedSearch.cached);
+              response.end();
+              return;
+            }
+
+            try {
+              for await (const snapshot of services.searchCatalogStream(payload, {
+                signal: startedSearch.signal
+              })) {
+                finalSnapshot = snapshot;
+                sendEventStreamMessage(
+                  response,
+                  snapshot.remote?.progress?.complete ? 'done' : 'snapshot',
+                  snapshot
+                );
+              }
+
+              if (finalSnapshot) {
+                searchCoordinator.finishSearch(startedSearch.entry, finalSnapshot);
+              }
+
+              if (!isResponseClosed(response)) {
+                response.end();
+              }
+            } finally {
+              searchCoordinator.releaseSearch(startedSearch.entry);
+            }
+
+            return;
+          }
+
           const result = await searchCoordinator.runSearch({
             clientKey,
             cacheKey: searchCoordinator.createCacheKey(payload),
@@ -776,6 +925,25 @@ function createMusicServer(services) {
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/api/playback-proxy') {
+        const requestAbort = createRequestAbortController(
+          request,
+          'Remote playback proxy request was closed by the client.'
+        );
+
+        try {
+          await streamRemotePlayback(
+            request,
+            response,
+            requestUrl.searchParams.get('source') || '',
+            requestAbort.signal
+          );
+        } finally {
+          requestAbort.detach();
+        }
+        return;
+      }
+
       notFound(response);
     } catch (error) {
       if (isAbortError(error) && isResponseClosed(response)) {
@@ -783,6 +951,12 @@ function createMusicServer(services) {
       }
 
       if (isResponseClosed(response)) {
+        return;
+      }
+
+      if (String(response.getHeader('Content-Type') || '').includes('text/event-stream')) {
+        sendEventStreamMessage(response, 'error', { error: error.message });
+        response.end();
         return;
       }
 
