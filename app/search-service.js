@@ -898,13 +898,14 @@ async function searchProviders(
   settings,
   { signal } = {}
 ) {
-  const trimmedQuery = query.trim();
+  const trimmedQuery = String(query || '').trim();
+  const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
   if (!trimmedQuery) {
     return {
       items: [],
       total: 0,
       page: 1,
-      pageSize,
+      pageSize: safePageSize,
       totalPages: 1,
       provider: parseProviderSelection(provider),
       warning: ''
@@ -912,7 +913,6 @@ async function searchProviders(
   }
 
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
-  const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
   const providers = parseProviderSelection(provider);
   const fastMultiProviderMode = providers.length > 1;
   const results = await Promise.allSettled(
@@ -962,7 +962,7 @@ async function* searchProvidersStream(
   settings,
   { signal } = {}
 ) {
-  const trimmedQuery = query.trim();
+  const trimmedQuery = String(query || '').trim();
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
   const providers = parseProviderSelection(provider);
@@ -976,7 +976,7 @@ async function* searchProvidersStream(
         providerErrors: {},
         providers,
         page: 1,
-        pageSize
+        pageSize: safePageSize
       },
       {
         complete: true,
@@ -1063,7 +1063,7 @@ async function* searchProvidersStream(
 }
 
 async function inspectDirectLink(url, settings, { signal } = {}) {
-  const trimmedUrl = url.trim();
+  const trimmedUrl = String(url || '').trim();
   if (!trimmedUrl) {
     throw new Error('Enter a direct media link.');
   }

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const { createMusicServer } = require('../app/music-server');
@@ -105,6 +106,75 @@ async function sendEventStreamRequest({ port, path }) {
 
     request.on('error', reject);
     request.end();
+  });
+}
+
+async function sendRequest({ port, method, path, headers = {} }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method,
+        headers
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on('end', () => {
+          resolve({
+            statusCode: response.statusCode,
+            headers: response.headers,
+            body: Buffer.concat(chunks)
+          });
+        });
+      }
+    );
+
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+async function createStreamingJsonRequest({ port, path, body }) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        }
+      },
+      (response) => {
+        let raw = '';
+        response.on('data', (chunk) => {
+          raw += chunk.toString();
+        });
+        response.on('end', () => {
+          resolve({
+            request,
+            response: {
+              statusCode: response.statusCode,
+              body: raw ? JSON.parse(raw) : null
+            }
+          });
+        });
+      }
+    );
+
+    request.on('error', reject);
+    request.write(payload);
+    request.end();
+
+    resolve({ request });
   });
 }
 
@@ -250,6 +320,144 @@ test('music server can stream incremental search snapshots over SSE', async () =
     assert.equal(response.events[0].data.remote.progress.complete, false);
     assert.equal(response.events[1].data.remote.items.length, 2);
     assert.equal(response.events[1].data.remote.progress.complete, true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('music server rejects malformed byte ranges without crashing', async () => {
+  const port = await getFreePort();
+  const fixturePath = __filename;
+  const server = createMusicServer({
+    getAuthStatus: () => ({ enabled: false }),
+    getTrack: () => ({
+      id: 'fixture',
+      filePath: fixturePath,
+      fileName: 'music-server.test.js'
+    })
+  });
+
+  try {
+    await server.start({
+      host: '127.0.0.1',
+      port
+    });
+
+    const reversedRange = await sendRequest({
+      port,
+      method: 'GET',
+      path: '/stream/fixture',
+      headers: {
+        Range: 'bytes=20-10'
+      }
+    });
+    assert.equal(reversedRange.statusCode, 416);
+    assert.equal(reversedRange.headers['content-range'], `bytes */${fs.statSync(fixturePath).size}`);
+
+    const suffixRange = await sendRequest({
+      port,
+      method: 'GET',
+      path: '/stream/fixture',
+      headers: {
+        Range: 'bytes=-16'
+      }
+    });
+    assert.equal(suffixRange.statusCode, 206);
+    assert.equal(Number(suffixRange.headers['content-length']), 16);
+    assert.equal(suffixRange.body.length, 16);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('music server does not abort recommendation work after a normal request body finishes', async () => {
+  const port = await getFreePort();
+  let observedSignalAborted = null;
+  const server = createMusicServer({
+    getAuthStatus: () => ({ enabled: false }),
+    getRecommendations: async (_payload, { signal } = {}) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      observedSignalAborted = signal?.aborted || false;
+      return {
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 5,
+        totalPages: 1
+      };
+    }
+  });
+
+  try {
+    await server.start({
+      host: '127.0.0.1',
+      port
+    });
+
+    const response = await sendJsonRequest({
+      port,
+      method: 'POST',
+      path: '/api/recommendations',
+      body: {
+        title: 'Apollo',
+        artist: 'Tester'
+      }
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(observedSignalAborted, false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('music server keeps shared recommendation work alive when the first client disconnects', async () => {
+  const port = await getFreePort();
+  let callCount = 0;
+  const server = createMusicServer({
+    getAuthStatus: () => ({ enabled: false }),
+    getRecommendations: async () => {
+      callCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return {
+        items: [{ id: 'shared-result' }],
+        total: 1,
+        page: 1,
+        pageSize: 5,
+        totalPages: 1
+      };
+    }
+  });
+
+  try {
+    await server.start({
+      host: '127.0.0.1',
+      port
+    });
+
+    const firstRequest = await createStreamingJsonRequest({
+      port,
+      path: '/api/recommendations',
+      body: {
+        title: 'Apollo',
+        artist: 'Tester'
+      }
+    });
+    firstRequest.request.destroy();
+
+    const secondResponse = await sendJsonRequest({
+      port,
+      method: 'POST',
+      path: '/api/recommendations',
+      body: {
+        title: 'Apollo',
+        artist: 'Tester'
+      }
+    });
+
+    assert.equal(secondResponse.statusCode, 200);
+    assert.equal(secondResponse.body.items.length, 1);
+    assert.equal(callCount, 1);
   } finally {
     await server.stop();
   }

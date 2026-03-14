@@ -328,3 +328,41 @@ test('Multi-provider search starts provider requests in parallel', async () => {
     }
   }
 });
+
+test('searchProviders tolerates missing query input and returns an empty result', async () => {
+  const { searchProviders } = require('../app/search-service');
+
+  const result = await searchProviders(
+    { provider: 'spotify', pageSize: '5' },
+    {
+      ytDlpPath: 'yt-dlp',
+      ffmpegPath: 'ffmpeg'
+    }
+  );
+
+  assert.deepEqual(result, {
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 5,
+    totalPages: 1,
+    provider: ['spotify'],
+    warning: ''
+  });
+});
+
+test('inspectDirectLink rejects missing input with a user-facing validation error', async () => {
+  const { inspectDirectLink } = require('../app/search-service');
+
+  await assert.rejects(
+    () =>
+      inspectDirectLink(undefined, {
+        ytDlpPath: 'yt-dlp',
+        ffmpegPath: 'ffmpeg'
+      }),
+    (error) => {
+      assert.equal(error.message, 'Enter a direct media link.');
+      return true;
+    }
+  );
+});

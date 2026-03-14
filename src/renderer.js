@@ -18,6 +18,7 @@ const elements = {
   serverBadge: document.getElementById('server-badge'),
   serverUrl: document.getElementById('server-url'),
   statusBanner: document.getElementById('status-banner'),
+  updateAction: document.getElementById('update-action'),
   runtimeStartup: document.getElementById('runtime-startup'),
   runtimeAuth: document.getElementById('runtime-auth'),
   runtimeLibrary: document.getElementById('runtime-library'),
@@ -29,9 +30,12 @@ const elements = {
 const state = {
   dashboard: null,
   stopDownloadSubscription: null,
+  stopDashboardSubscription: null,
+  stopUpdateSubscription: null,
   refreshTimer: null,
   fitFrame: 0,
-  fitObserver: null
+  fitObserver: null,
+  updateState: null
 };
 
 function escapeHtml(value) {
@@ -187,9 +191,44 @@ function renderRuntime() {
     .join('');
 }
 
+function renderUpdateAction() {
+  if (!elements.updateAction) {
+    return;
+  }
+
+  const updateState = state.updateState || {};
+  if (updateState.downloaded) {
+    elements.updateAction.textContent = 'Install Update';
+    elements.updateAction.disabled = false;
+    return;
+  }
+
+  if (updateState.checking) {
+    elements.updateAction.textContent = 'Checking...';
+    elements.updateAction.disabled = true;
+    return;
+  }
+
+  if (!updateState.supported) {
+    elements.updateAction.textContent = 'Updates Unavailable';
+    elements.updateAction.disabled = true;
+    return;
+  }
+
+  if (!updateState.configured) {
+    elements.updateAction.textContent = 'Updates Disabled';
+    elements.updateAction.disabled = true;
+    return;
+  }
+
+  elements.updateAction.textContent = 'Check Updates';
+  elements.updateAction.disabled = false;
+}
+
 function render() {
   hydrateSettings(state.dashboard?.settings || {});
   renderRuntime();
+  renderUpdateAction();
   queueViewportFit();
 }
 
@@ -254,7 +293,12 @@ function scheduleDashboardRefresh() {
 }
 
 async function refreshDashboard() {
-  state.dashboard = await window.mediaApp.getDashboard();
+  const [dashboard, updateState] = await Promise.all([
+    window.mediaApp.getDashboard(),
+    window.mediaApp.getUpdateState()
+  ]);
+  state.dashboard = dashboard;
+  state.updateState = updateState;
   render();
 }
 
@@ -285,6 +329,30 @@ function handleDocumentClick(event) {
     void safely(async () => {
       await window.mediaApp.openDownloadFolder();
       setStatus('Opened the Apollo library folder.');
+    });
+    return;
+  }
+
+  if (type === 'check-updates') {
+    void safely(async () => {
+      if (state.updateState?.downloaded) {
+        await window.mediaApp.installUpdate();
+        setStatus('Installing the downloaded Apollo update.');
+        return;
+      }
+
+      if (!state.updateState?.supported) {
+        setStatus(state.updateState?.message || 'Updates are unavailable for this build.');
+        return;
+      }
+
+      if (!state.updateState?.configured) {
+        setStatus(state.updateState?.message || 'Updates are not configured for this build.');
+        return;
+      }
+
+      await window.mediaApp.checkForUpdates();
+      setStatus('Checking for Apollo updates...');
     });
     return;
   }
@@ -338,8 +406,24 @@ state.stopDownloadSubscription = window.mediaApp.onDownloadUpdate((download) => 
   }
 });
 
+state.stopDashboardSubscription = window.mediaApp.onDashboardState((dashboard) => {
+  state.dashboard = dashboard;
+  render();
+  setStatus('Apollo settings were updated from the tray.');
+});
+
+state.stopUpdateSubscription = window.mediaApp.onUpdateState((updateState) => {
+  state.updateState = updateState;
+  renderUpdateAction();
+  if (updateState?.message) {
+    setStatus(updateState.message);
+  }
+});
+
 window.addEventListener('beforeunload', () => {
   state.stopDownloadSubscription?.();
+  state.stopDashboardSubscription?.();
+  state.stopUpdateSubscription?.();
   clearTimeout(state.refreshTimer);
   if (state.fitFrame) {
     window.cancelAnimationFrame(state.fitFrame);

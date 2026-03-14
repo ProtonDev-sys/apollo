@@ -27,5 +27,10 @@ contextBridge.exposeInMainWorld('mediaApp', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('app:update-state', listener);
     return () => ipcRenderer.removeListener('app:update-state', listener);
+  },
+  onDashboardState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app:dashboard-state', listener);
+    return () => ipcRenderer.removeListener('app:dashboard-state', listener);
   }
 });

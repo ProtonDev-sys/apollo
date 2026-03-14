@@ -10,6 +10,7 @@ class UpdateService extends EventEmitter {
     super();
     this.electronApp = electronApp;
     this.pollTimer = null;
+    this.initialCheckTimer = null;
     this.initialized = false;
     this.state = {
       supported: electronApp.isPackaged,
@@ -74,94 +75,108 @@ class UpdateService extends EventEmitter {
       return;
     }
 
-    ({ autoUpdater: this.autoUpdater } = require('electron-updater'));
-    const configuredFromEnvironment = this.configureFeed();
-    const configured = configuredFromEnvironment || this.hasBuiltInFeedConfig();
-    this.setState({
-      supported: true,
-      configured,
-      message: configured
-        ? 'Ready to check for updates.'
-        : 'Set APOLLO_UPDATE_URL or GitHub publish metadata to enable updates.'
-    });
-
-    if (!configured) {
-      return;
-    }
-
-    this.autoUpdater.autoDownload = true;
-    this.autoUpdater.autoInstallOnAppQuit = true;
-
-    this.autoUpdater.on('checking-for-update', () => {
+    try {
+      ({ autoUpdater: this.autoUpdater } = require('electron-updater'));
+      const configuredFromEnvironment = this.configureFeed();
+      const configured = configuredFromEnvironment || this.hasBuiltInFeedConfig();
       this.setState({
-        checking: true,
-        error: '',
-        message: 'Checking for updates...'
+        supported: true,
+        configured,
+        message: configured
+          ? 'Ready to check for updates.'
+          : 'Set APOLLO_UPDATE_URL or GitHub publish metadata to enable updates.'
       });
-    });
 
-    this.autoUpdater.on('update-available', (info) => {
-      this.setState({
-        checking: false,
-        available: true,
-        downloaded: false,
-        progress: 0,
-        version: info?.version || this.state.version,
-        message: `Downloading Apollo ${info?.version || 'update'}...`,
-        error: ''
+      if (!configured) {
+        return;
+      }
+
+      this.autoUpdater.autoDownload = true;
+      this.autoUpdater.autoInstallOnAppQuit = true;
+
+      this.autoUpdater.on('checking-for-update', () => {
+        this.setState({
+          checking: true,
+          error: '',
+          message: 'Checking for updates...'
+        });
       });
-    });
 
-    this.autoUpdater.on('update-not-available', (info) => {
+      this.autoUpdater.on('update-available', (info) => {
+        this.setState({
+          checking: false,
+          available: true,
+          downloaded: false,
+          progress: 0,
+          version: info?.version || this.state.version,
+          message: `Downloading Apollo ${info?.version || 'update'}...`,
+          error: ''
+        });
+      });
+
+      this.autoUpdater.on('update-not-available', (info) => {
+        this.setState({
+          checking: false,
+          available: false,
+          downloaded: false,
+          progress: 0,
+          version: info?.version || this.electronApp.getVersion(),
+          message: 'Apollo is up to date.',
+          error: ''
+        });
+      });
+
+      this.autoUpdater.on('download-progress', (progress) => {
+        this.setState({
+          checking: false,
+          available: true,
+          downloaded: false,
+          progress: Math.max(0, Math.min(100, Number(progress?.percent) || 0)),
+          message: `Downloading update... ${Math.round(Number(progress?.percent) || 0)}%`,
+          error: ''
+        });
+      });
+
+      this.autoUpdater.on('update-downloaded', (info) => {
+        this.setState({
+          checking: false,
+          available: true,
+          downloaded: true,
+          progress: 100,
+          version: info?.version || this.state.version,
+          message: `Apollo ${info?.version || 'update'} is ready to install.`,
+          error: ''
+        });
+      });
+
+      this.autoUpdater.on('error', (error) => {
+        this.setState({
+          checking: false,
+          error: error.message,
+          message: error.message || 'Update check failed.'
+        });
+      });
+
+      this.initialCheckTimer = setTimeout(() => {
+        void this.checkForUpdates();
+      }, INITIAL_UPDATE_CHECK_DELAY_MS);
+
+      this.pollTimer = setInterval(() => {
+        void this.checkForUpdates();
+      }, UPDATE_POLL_INTERVAL_MS);
+    } catch (error) {
+      this.autoUpdater = null;
       this.setState({
+        supported: false,
+        configured: false,
         checking: false,
         available: false,
         downloaded: false,
         progress: 0,
-        version: info?.version || this.electronApp.getVersion(),
-        message: 'Apollo is up to date.',
-        error: ''
+        message: `Updates are unavailable: ${error.message}`,
+        error: error.message
       });
-    });
-
-    this.autoUpdater.on('download-progress', (progress) => {
-      this.setState({
-        checking: false,
-        available: true,
-        downloaded: false,
-        progress: Math.max(0, Math.min(100, Number(progress?.percent) || 0)),
-        message: `Downloading update... ${Math.round(Number(progress?.percent) || 0)}%`,
-        error: ''
-      });
-    });
-
-    this.autoUpdater.on('update-downloaded', (info) => {
-      this.setState({
-        checking: false,
-        available: true,
-        downloaded: true,
-        progress: 100,
-        version: info?.version || this.state.version,
-        message: `Apollo ${info?.version || 'update'} is ready to install.`,
-        error: ''
-      });
-    });
-
-    this.autoUpdater.on('error', (error) => {
-      this.setState({
-        checking: false,
-        error: error.message,
-        message: error.message || 'Update check failed.'
-      });
-    });
-
-    setTimeout(() => {
-      void this.checkForUpdates();
-    }, INITIAL_UPDATE_CHECK_DELAY_MS);
-
-    this.pollTimer = setInterval(() => {
-      void this.checkForUpdates();
-    }, UPDATE_POLL_INTERVAL_MS);
+    }
   }
 
   async checkForUpdates() {
@@ -174,7 +189,27 @@ class UpdateService extends EventEmitter {
       return this.getState();
     }
 
-    await this.autoUpdater.checkForUpdates();
+    if (!this.autoUpdater || this.state.checking || this.state.downloaded) {
+      return this.getState();
+    }
+
+    this.setState({
+      checking: true,
+      error: '',
+      message: 'Checking for updates...'
+    });
+
+    try {
+      await this.autoUpdater.checkForUpdates();
+    } catch (error) {
+      this.setState({
+        checking: false,
+        error: error.message,
+        message: error.message || 'Update check failed.'
+      });
+      throw error;
+    }
+
     return this.getState();
   }
 
@@ -188,6 +223,11 @@ class UpdateService extends EventEmitter {
   }
 
   dispose() {
+    if (this.initialCheckTimer) {
+      clearTimeout(this.initialCheckTimer);
+      this.initialCheckTimer = null;
+    }
+
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;

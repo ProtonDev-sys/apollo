@@ -1,6 +1,7 @@
 {
   "name": "apollo",
   "version": "0.1.0",
+  "private": true,
   "description": "Apollo music server with Electron config UI, headless CLI, downloads, playlists, and a local HTTP API.",
   "main": "main.js",
   "bin": {

@@ -119,9 +119,10 @@ class StartupService {
       return false;
     }
 
+    const args = buildLaunchArguments(this.appRoot, this.isDefaultApp);
     this.electronApp.setLoginItemSettings({
       openAtLogin: enabled,
-      args: ['--background']
+      args
     });
     return true;
   }

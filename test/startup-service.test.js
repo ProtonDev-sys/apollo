@@ -18,6 +18,25 @@ test('buildLinuxAutostartEntry emits a background desktop entry', () => {
   assert.match(entry, /X-GNOME-Autostart-enabled=true/);
 });
 
+test('StartupService includes the app root for Electron default-app login items', () => {
+  const loginCalls = [];
+  const service = new StartupService({
+    appRoot: 'C:/dev/Apollo',
+    isDefaultApp: true,
+    electronApp: {
+      setLoginItemSettings(payload) {
+        loginCalls.push(payload);
+      }
+    }
+  });
+
+  const enabled = service.syncWindowsLoginItem(true);
+  assert.equal(enabled, true);
+  assert.equal(loginCalls.length, 1);
+  assert.equal(loginCalls[0].openAtLogin, true);
+  assert.deepEqual(loginCalls[0].args, ['C:/dev/Apollo', '--background']);
+});
+
 test('StartupService uses Electron login items when available on Windows', {
   skip: process.platform !== 'win32'
 }, async () => {

@@ -54,6 +54,20 @@ function emitUpdateState() {
   updateTrayMenu();
 }
 
+function canRunInBackground() {
+  return keepRunningInBackground && Boolean(tray);
+}
+
+async function emitDashboardState() {
+  if (!runtime || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  // Tray actions can mutate settings while the window is already open, so
+  // push a fresh dashboard snapshot instead of waiting for a manual reload.
+  mainWindow.webContents.send('app:dashboard-state', await runtime.getDashboard());
+}
+
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
@@ -78,13 +92,13 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   mainWindow.on('minimize', (event) => {
-    if (keepRunningInBackground && !isQuitRequested) {
+    if (canRunInBackground() && !isQuitRequested) {
       event.preventDefault();
       mainWindow.hide();
     }
   });
   mainWindow.on('close', (event) => {
-    if (keepRunningInBackground && !isQuitRequested) {
+    if (canRunInBackground() && !isQuitRequested) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -108,9 +122,8 @@ async function applyBackgroundPreference(enabled) {
   currentSettings = payload.settings;
   keepRunningInBackground = Boolean(payload.settings.autoStartBackgroundServer);
   updateTrayMenu();
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app:update-state', updateService?.getState() || {});
-  }
+  await emitDashboardState();
+  emitUpdateState();
 }
 
 function updateTrayMenu() {
@@ -185,15 +198,17 @@ function updateTrayMenu() {
 
 function createTray() {
   if (tray) {
-    return;
+    return true;
   }
 
   try {
     tray = new Tray(createAppIcon(process.platform === 'win32' ? 16 : 24));
     tray.on('click', () => createWindow());
     updateTrayMenu();
+    return true;
   } catch (error) {
     tray = null;
+    return false;
   }
 }
 
@@ -222,7 +237,12 @@ app.whenReady().then(async () => {
     updateService.initialize();
     currentUpdateState = updateService.getState();
 
-    createTray();
+    const trayReady = createTray();
+    if (!trayReady) {
+      // Without a tray there is no recovery path for a hidden background app,
+      // so fall back to the normal windowed lifecycle.
+      keepRunningInBackground = false;
+    }
 
     if (!isBackgroundLaunch || !keepRunningInBackground) {
       createWindow();
@@ -253,7 +273,7 @@ app.on('before-quit', async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (keepRunningInBackground) {
+  if (canRunInBackground()) {
     return;
   }
 

@@ -1,5 +1,27 @@
+# Dependencies
 node_modules/
+
+# Logs and temporary diagnostics
 npm-debug.log*
 *.log
+
+# Local runtime and release output
 .codex-runtime/
 dist/
+coverage/
+.nyc_output/
+out/
+release/
+*.tgz
+
+# Local config and secret material
+.env
+.env.*
+*.local
+apollo.config.json
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -715,7 +715,7 @@ async function searchItunesTracks({ query, page = 1, pageSize = 10, signal } = {
     total,
     page: safePage,
     pageSize: safePageSize,
-    totalPages: Math.max(1, total < safePageSize ? 1 : safePage + 1)
+    totalPages: Math.max(1, Math.ceil(total / safePageSize))
   };
 }
 

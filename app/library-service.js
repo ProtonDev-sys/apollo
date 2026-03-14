@@ -74,11 +74,12 @@ async function ensureUniquePath(targetPath) {
 async function removeEmptyParentDirectories(startDirectory, stopDirectory) {
   const resolvedStopDirectory = path.resolve(stopDirectory);
   let currentDirectory = path.resolve(startDirectory);
+  const isWithinStopDirectory = (targetPath) => {
+    const relativePath = path.relative(resolvedStopDirectory, targetPath);
+    return relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+  };
 
-  while (
-    currentDirectory.startsWith(resolvedStopDirectory) &&
-    currentDirectory !== resolvedStopDirectory
-  ) {
+  while (isWithinStopDirectory(currentDirectory)) {
     const entries = await fs.readdir(currentDirectory);
     if (entries.length) {
       return;
@@ -94,6 +95,21 @@ function shouldRepairStoredTrack(track) {
     hasWeakTrackMetadata(track) &&
     Boolean(track.sourceUrl || track.externalUrl || track.downloadTarget || track.providerIds)
   );
+}
+
+async function moveFile(sourcePath, targetPath) {
+  try {
+    await fs.rename(sourcePath, targetPath);
+  } catch (error) {
+    if (error?.code !== 'EXDEV') {
+      throw error;
+    }
+
+    // Cross-device moves need a copy/unlink fallback when staging and
+    // library directories live on different volumes.
+    await fs.copyFile(sourcePath, targetPath);
+    await fs.unlink(sourcePath);
+  }
 }
 
 class LibraryService {
@@ -113,12 +129,12 @@ class LibraryService {
       fileName: path.basename(filePath),
       provider: existingTrack?.provider || nextTrack.sourcePlatform || 'library',
       sourcePlatform: existingTrack?.sourcePlatform || nextTrack.sourcePlatform || 'library',
-      sourceUrl: existingTrack?.sourceUrl || nextTrack.sourceUrl || '',
-      externalUrl: existingTrack?.externalUrl || nextTrack.externalUrl || '',
+      sourceUrl: nextTrack.sourceUrl || existingTrack?.sourceUrl || '',
+      externalUrl: nextTrack.externalUrl || existingTrack?.externalUrl || '',
       artwork: nextTrack.artwork || existingTrack?.artwork || '',
-      providerIds: existingTrack?.providerIds || nextTrack.providerIds || {},
-      isrc: existingTrack?.isrc || nextTrack.isrc || '',
-      metadataSource: existingTrack?.metadataSource || nextTrack.metadataSource || 'library'
+      providerIds: nextTrack.providerIds || existingTrack?.providerIds || {},
+      isrc: nextTrack.isrc || existingTrack?.isrc || '',
+      metadataSource: nextTrack.metadataSource || existingTrack?.metadataSource || 'library'
     };
 
     if (shouldRepairStoredTrack(nextTrack)) {
@@ -157,8 +173,9 @@ class LibraryService {
   async syncLibrary(libraryDirectory, settings = {}) {
     await fs.mkdir(libraryDirectory, { recursive: true });
     const files = await walkAudioFiles(libraryDirectory);
+    const storedTracks = this.store.getState ? this.store.getState().tracks || [] : [];
     const existingTracks = new Map(
-      this.store.listTracks({ page: 1, pageSize: 10000 }).items.map((track) => [
+      storedTracks.map((track) => [
         String(track.filePath || '').toLowerCase(),
         track
       ])
@@ -191,7 +208,7 @@ class LibraryService {
 
     await fs.mkdir(artistDirectory, { recursive: true });
     const targetPath = await ensureUniquePath(path.join(artistDirectory, `${title}${extension}`));
-    await fs.rename(sourcePath, targetPath);
+    await moveFile(sourcePath, targetPath);
 
     const hydratedTrack = await this.hydrateTrackFromFile(libraryDirectory, targetPath, settings, {
       ...metadata,

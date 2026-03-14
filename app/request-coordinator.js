@@ -96,6 +96,8 @@ class RequestCoordinator {
 
     let sharedPromise = this.inFlight.get(cacheKey);
     if (!sharedPromise) {
+      // Shared work must not inherit a single caller's abort signal, otherwise
+      // one disconnect can fail every peer waiting on the same cache key.
       sharedPromise = Promise.resolve()
         .then(() => execute())
         .then((result) => {

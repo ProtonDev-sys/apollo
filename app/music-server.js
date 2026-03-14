@@ -113,14 +113,17 @@ function createRequestAbortController(request, message = 'Request was closed by 
     }
   };
 
+  // `IncomingMessage.close` fires after a request completes in modern Node,
+  // so use the underlying socket close instead to detect real disconnects.
+  const clientSocket = request.socket;
   request.once('aborted', abortRequest);
-  request.once('close', abortRequest);
+  clientSocket?.once('close', abortRequest);
 
   return {
     signal: controller.signal,
     detach() {
       request.off('aborted', abortRequest);
-      request.off('close', abortRequest);
+      clientSocket?.off('close', abortRequest);
     }
   };
 }
@@ -311,6 +314,44 @@ async function streamRemotePlayback(request, response, sourceUrl, abortSignal) {
   });
 }
 
+function parseByteRange(rangeHeader, fileSize) {
+  const match = String(rangeHeader || '').match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const [, startText, endText] = match;
+  if (!startText && !endText) {
+    return null;
+  }
+
+  let start = 0;
+  let end = fileSize - 1;
+
+  if (startText && endText) {
+    start = Number.parseInt(startText, 10);
+    end = Number.parseInt(endText, 10);
+  } else if (startText) {
+    start = Number.parseInt(startText, 10);
+  } else {
+    const suffixLength = Number.parseInt(endText, 10);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return null;
+    }
+
+    start = Math.max(0, fileSize - suffixLength);
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
+    return null;
+  }
+
+  return {
+    start,
+    end: Math.min(end, fileSize - 1)
+  };
+}
+
 function streamTrack(request, response, track, requestUrl) {
   if (!track || !track.filePath || !fs.existsSync(track.filePath)) {
     notFound(response);
@@ -341,17 +382,17 @@ function streamTrack(request, response, track, requestUrl) {
     return;
   }
 
-  const [startText, endText] = range.replace(/bytes=/, '').split('-');
-  const start = Number.parseInt(startText, 10) || 0;
-  const end = endText ? Number.parseInt(endText, 10) : stat.size - 1;
+  const parsedRange = parseByteRange(range, stat.size);
 
-  if (start >= stat.size || end >= stat.size) {
+  if (!parsedRange || parsedRange.start >= stat.size) {
     response.writeHead(416, {
       'Content-Range': `bytes */${stat.size}`
     });
     response.end();
     return;
   }
+
+  const { start, end } = parsedRange;
 
   response.writeHead(206, {
     'Content-Range': `bytes ${start}-${end}/${stat.size}`,
@@ -474,7 +515,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `artist-search:${stableSerialize(payload)}`,
             requestSignal: requestAbort.signal,
-            execute: () => services.searchArtists(payload, { signal: requestAbort.signal })
+            execute: () => services.searchArtists(payload)
           });
           sendJson(response, 200, result);
         } finally {
@@ -498,10 +539,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `artist-tracks:${artistTracksRoute[1]}:${stableSerialize(payload)}`,
             requestSignal: requestAbort.signal,
-            execute: () =>
-              services.listArtistTracks(artistTracksRoute[1], payload, {
-                signal: requestAbort.signal
-              })
+            execute: () => services.listArtistTracks(artistTracksRoute[1], payload)
           });
           sendJson(response, 200, result);
         } finally {
@@ -525,10 +563,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `artist-releases:${artistReleasesRoute[1]}:${stableSerialize(payload)}`,
             requestSignal: requestAbort.signal,
-            execute: () =>
-              services.listArtistReleases(artistReleasesRoute[1], payload, {
-                signal: requestAbort.signal
-              })
+            execute: () => services.listArtistReleases(artistReleasesRoute[1], payload)
           });
           sendJson(response, 200, result);
         } finally {
@@ -548,10 +583,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `release-tracks:${releaseTracksRoute[1]}`,
             requestSignal: requestAbort.signal,
-            execute: () =>
-              services.listReleaseTracks(releaseTracksRoute[1], {
-                signal: requestAbort.signal
-              })
+            execute: () => services.listReleaseTracks(releaseTracksRoute[1])
           });
           sendJson(response, 200, result);
         } finally {
@@ -571,7 +603,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `artist:${artistRoute[1]}`,
             requestSignal: requestAbort.signal,
-            execute: () => services.getArtist(artistRoute[1], { signal: requestAbort.signal })
+            execute: () => services.getArtist(artistRoute[1])
           });
           sendJson(response, 200, result);
         } finally {
@@ -595,10 +627,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `related:${trackRelatedRoute[1]}:${stableSerialize(payload)}`,
             requestSignal: requestAbort.signal,
-            execute: () =>
-              services.getRelatedTracks(trackRelatedRoute[1], payload, {
-                signal: requestAbort.signal
-              })
+            execute: () => services.getRelatedTracks(trackRelatedRoute[1], payload)
           });
           sendJson(response, 200, result);
         } finally {
@@ -723,7 +752,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `recommendations:${stableSerialize(body)}`,
             requestSignal: requestAbort.signal,
-            execute: () => services.getRecommendations(body, { signal: requestAbort.signal })
+            execute: () => services.getRecommendations(body)
           });
           sendJson(response, 200, result);
         } finally {
@@ -754,7 +783,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `playlist-import:${stableSerialize(body)}`,
             requestSignal: requestAbort.signal,
-            execute: () => services.importPlaylistFromUrl(body, { signal: requestAbort.signal })
+            execute: () => services.importPlaylistFromUrl(body)
           });
           sendJson(response, 201, result);
         } finally {
@@ -885,7 +914,7 @@ function createMusicServer(services) {
           const result = await requestCoordinator.run({
             cacheKey: `resolve-shared-track:${stableSerialize(body)}`,
             requestSignal: requestAbort.signal,
-            execute: () => services.resolveSharedTrack(body, { signal: requestAbort.signal })
+            execute: () => services.resolveSharedTrack(body)
           });
           sendJson(response, 200, result);
         } finally {
