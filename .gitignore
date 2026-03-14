@@ -8,6 +8,7 @@ npm-debug.log*
 # Local runtime and release output
 .codex-runtime/
 dist/
+dist-release/
 coverage/
 .nyc_output/
 out/

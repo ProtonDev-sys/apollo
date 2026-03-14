@@ -206,7 +206,7 @@ npm.cmd run release:win
 
 That publishes the Windows installer artifacts to the `ProtonDev-sys/apollo` GitHub releases feed.
 
-Packaged Apollo builds then use that GitHub feed automatically. You can still override the feed URL with:
+Installed Windows builds that use the NSIS installer can then use that GitHub feed automatically. Portable builds should be updated manually by replacing the executable. You can still override the feed URL for installed builds with:
 
 ```powershell
 $env:APOLLO_UPDATE_URL = "https://your-domain.example/apollo"
