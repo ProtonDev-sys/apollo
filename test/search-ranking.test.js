@@ -158,22 +158,28 @@ test('bridge identities merge every previously separate matching cluster', () =>
 });
 
 test('remote pagination is applied after global ranking and deduplication', () => {
-  const pagination = paginateRankedRemoteItems([
+  const candidates = [
     track({ id: 'one', title: 'Song One', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '1' } }),
     track({ id: 'two', title: 'Song Two', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '2' } }),
     track({ id: 'three', title: 'Song Three', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '3' } }),
     track({ id: 'four', title: 'Song Four', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '4' } }),
     track({ id: 'five', title: 'Song Five', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '5' } })
-  ], 'song artist', 2, 2);
+  ];
+  const fullyRanked = dedupeAndRankRemoteItems(candidates, 'song artist');
+  const firstPage = paginateRankedRemoteItems(candidates, 'song artist', 1, 2);
+  const secondPage = paginateRankedRemoteItems(candidates, 'song artist', 2, 2);
 
-  assert.equal(pagination.page, 2);
-  assert.equal(pagination.pageSize, 2);
-  assert.equal(pagination.total, 5);
-  assert.equal(pagination.totalPages, 3);
-  assert.equal(pagination.items.length, 2);
+  assert.equal(secondPage.page, 2);
+  assert.equal(secondPage.pageSize, 2);
+  assert.equal(secondPage.total, 5);
+  assert.equal(secondPage.totalPages, 3);
   assert.deepEqual(
-    new Set(pagination.items.map((item) => item.id)),
-    new Set(['four', 'one'])
+    secondPage.items.map((item) => item.id),
+    fullyRanked.slice(2, 4).map((item) => item.id)
+  );
+  assert.equal(
+    firstPage.items.some((firstItem) => secondPage.items.some((secondItem) => secondItem.id === firstItem.id)),
+    false
   );
 });
 
