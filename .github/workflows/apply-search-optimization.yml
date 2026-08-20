@@ -1,0 +1,47 @@
+name: Apply indexed song search
+
+on:
+  push:
+    branches:
+      - codex/song-search-optimization-20260820
+
+concurrency:
+  group: indexed-song-search
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/song-search-optimization-20260820
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Apply search refactor
+        run: python3 scripts/apply-search-optimization.py
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify Electron architecture and search behavior
+        run: npm run verify
+      - name: Commit validated permanent files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm \
+            .github/workflows/apply-search-optimization.yml \
+            scripts/apply-search-optimization.py
+          git add app/data-store.js app/search-service.js app/music-server.js
+          git commit -m "Index and relevance-rank song search"
+          git push origin HEAD:codex/song-search-optimization-20260820
