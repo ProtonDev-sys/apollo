@@ -25,8 +25,8 @@ if (packageJson.main !== 'main.js') {
   errors.push('package.json must use main.js as the Electron main-process entry.');
 }
 
-if (!/\belectron\b/.test(String(packageJson.scripts?.start || ''))) {
-  errors.push('The start script must launch Electron.');
+if (String(packageJson.scripts?.start || '').trim() !== 'electron .') {
+  errors.push('The start script must be the direct Electron launch command: electron .');
 }
 
 if (!dependencyNames.has('electron')) {
