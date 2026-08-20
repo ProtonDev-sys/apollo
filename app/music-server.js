@@ -8,6 +8,8 @@ const { createAbortError, createHttpError, isAbortError } = require('./http-erro
 const { RequestCoordinator } = require('./request-coordinator');
 const { SearchCoordinator } = require('./search-coordinator');
 
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
+const DEFAULT_ARTWORK_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 const MIME_TYPES = {
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',
@@ -41,6 +43,8 @@ function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Id');
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('Referrer-Policy', 'no-referrer');
 }
 
 function isResponseClosed(response) {
@@ -54,7 +58,8 @@ function sendJson(response, statusCode, payload) {
 
   setCorsHeaders(response);
   response.writeHead(statusCode, {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
   });
   response.end(JSON.stringify(payload));
 }
@@ -97,7 +102,9 @@ function sendNoContent(response) {
   }
 
   setCorsHeaders(response);
-  response.writeHead(204);
+  response.writeHead(204, {
+    'Cache-Control': 'no-store'
+  });
   response.end();
 }
 
@@ -128,21 +135,97 @@ function createRequestAbortController(request, message = 'Request was closed by 
   };
 }
 
-async function readBufferBody(request) {
+function formatByteLimit(maxBytes) {
+  const mebibyte = 1024 * 1024;
+  if (maxBytes % mebibyte === 0) {
+    return `${maxBytes / mebibyte} MiB`;
+  }
+
+  if (maxBytes % 1024 === 0) {
+    return `${maxBytes / 1024} KiB`;
+  }
+
+  return `${maxBytes} bytes`;
+}
+
+function createBodyTooLargeError(maxBytes) {
+  return createHttpError(413, `Request body exceeds the ${formatByteLimit(maxBytes)} limit.`);
+}
+
+async function readBufferBody(request, { maxBytes = DEFAULT_JSON_BODY_LIMIT_BYTES } = {}) {
   return new Promise((resolve, reject) => {
+    const contentLength = Number.parseInt(request.headers['content-length'] || '', 10);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      request.resume();
+      reject(createBodyTooLargeError(maxBytes));
+      return;
+    }
+
     const chunks = [];
-    request.on('data', (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    request.on('end', () => {
-      resolve(chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0));
-    });
-    request.on('error', reject);
+    let totalBytes = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      request.off('data', handleData);
+      request.off('end', handleEnd);
+      request.off('error', handleError);
+    };
+
+    const finishWithError = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      chunks.length = 0;
+      cleanup();
+      reject(error);
+    };
+
+    const finishWithSuccess = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve(chunks.length ? Buffer.concat(chunks, totalBytes) : Buffer.alloc(0));
+    };
+
+    const handleData = (chunk) => {
+      if (settled) {
+        return;
+      }
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > maxBytes) {
+        finishWithError(createBodyTooLargeError(maxBytes));
+        request.resume();
+        return;
+      }
+
+      chunks.push(buffer);
+    };
+
+    const handleEnd = () => {
+      finishWithSuccess();
+    };
+
+    const handleError = (error) => {
+      finishWithError(error);
+    };
+
+    request.on('data', handleData);
+    request.on('end', handleEnd);
+    request.on('error', handleError);
   });
 }
 
 async function readBody(request) {
-  const body = await readBufferBody(request);
+  const body = await readBufferBody(request, {
+    maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES
+  });
   if (!body.length) {
     return {};
   }
@@ -162,7 +245,9 @@ async function readMultipartArtwork(request) {
   }
 
   const boundary = boundaryMatch[1] || boundaryMatch[2];
-  const buffer = await readBufferBody(request);
+  const buffer = await readBufferBody(request, {
+    maxBytes: DEFAULT_ARTWORK_BODY_LIMIT_BYTES
+  });
   const raw = buffer.toString('latin1');
   const sections = raw.split(`--${boundary}`).slice(1, -1);
 
