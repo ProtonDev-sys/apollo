@@ -3,6 +3,7 @@ const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require(
 const { createHttpError, isAbortError } = require('./http-error');
 const {
   dedupeAndRankRemoteItems,
+  paginateRankedRemoteItems,
   getProviderRequestPageSize,
   isPreferredMusicResult,
   scoreRawProviderEntry
@@ -669,13 +670,9 @@ function createRemoteSearchResponse(
   { items, warnings, providerErrors, providers, page, pageSize, query },
   progress = null
 ) {
-  const rankedItems = dedupeAndRankRemoteItems(items, query, pageSize);
+  const pagination = paginateRankedRemoteItems(items, query, page, pageSize);
   const payload = {
-    items: rankedItems,
-    total: rankedItems.length,
-    page,
-    pageSize,
-    totalPages: Math.max(1, Math.ceil(rankedItems.length / pageSize)),
+    ...pagination,
     provider: providers,
     providerErrors,
     warning: warnings.join(' ')
@@ -694,36 +691,102 @@ function createRemoteSearchResponse(
   return payload;
 }
 
-function createProviderSearchRequest(selectedProvider, trimmedQuery, safePage, safePageSize, settings, signal) {
+function createProviderSearchRequest(selectedProvider, query, page, pageSize, settings, signal) {
   if (selectedProvider === 'spotify') {
-    return searchSpotify(trimmedQuery, safePage, safePageSize, settings, signal);
+    return searchSpotify(query, page, pageSize, settings, signal);
   }
 
   if (selectedProvider === 'itunes') {
     return searchItunesTracks({
-      query: trimmedQuery,
-      page: safePage,
-      pageSize: safePageSize,
+      query,
+      page,
+      pageSize,
       signal
     });
   }
 
   if (selectedProvider === 'deezer') {
     return searchDeezerTracks({
-      query: trimmedQuery,
-      page: safePage,
-      pageSize: safePageSize,
+      query,
+      page,
+      pageSize,
       signal
     });
   }
 
-  return searchViaYtDlp(trimmedQuery, selectedProvider, safePage, safePageSize, settings, signal);
+  return searchViaYtDlp(query, selectedProvider, page, pageSize, settings, signal);
+}
+
+async function searchProviderPages(
+  selectedProvider,
+  query,
+  requestedPage,
+  pageSize,
+  settings,
+  signal
+) {
+  const items = [];
+  const pageCount = Math.max(1, Number.parseInt(requestedPage, 10) || 1);
+
+  for (let providerPage = 1; providerPage <= pageCount; providerPage += 1) {
+    const result = await createProviderSearchRequest(
+      selectedProvider,
+      query,
+      providerPage,
+      pageSize,
+      settings,
+      signal
+    );
+    const pageItems = Array.isArray(result.items) ? result.items : [];
+    items.push(...pageItems);
+
+    if (pageItems.length < pageSize) {
+      break;
+    }
+  }
+
+  return {
+    items,
+    total: items.length,
+    page: 1,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(items.length / pageSize))
+  };
+}
+
+async function searchSpotifyFallbackPages(query, requestedPage, pageSize, settings, signal) {
+  const items = [];
+  const pageCount = Math.max(1, Number.parseInt(requestedPage, 10) || 1);
+
+  for (let providerPage = 1; providerPage <= pageCount; providerPage += 1) {
+    const result = await searchSpotifyFallback(
+      query,
+      providerPage,
+      pageSize,
+      settings,
+      signal
+    );
+    const pageItems = Array.isArray(result.items) ? result.items : [];
+    items.push(...pageItems);
+
+    if (pageItems.length < pageSize) {
+      break;
+    }
+  }
+
+  return {
+    items,
+    total: items.length,
+    page: 1,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(items.length / pageSize))
+  };
 }
 
 async function settleProviderSearchResult(
   providerName,
   result,
-  { fastMultiProviderMode, trimmedQuery, safePage, safePageSize, settings, signal }
+  { fastMultiProviderMode, trimmedQuery, requestedPage, providerPageSize, settings, signal }
 ) {
   if (result.status === 'fulfilled') {
     return {
@@ -743,10 +806,10 @@ async function settleProviderSearchResult(
 
   if (providerName === 'spotify' && !fastMultiProviderMode) {
     try {
-      const fallback = await searchSpotifyFallback(
+      const fallback = await searchSpotifyFallbackPages(
         trimmedQuery,
-        safePage,
-        safePageSize,
+        requestedPage,
+        providerPageSize,
         settings,
         signal
       );
@@ -801,7 +864,7 @@ async function searchProviders(
   const providerPageSize = getProviderRequestPageSize(safePageSize, providers.length, safePage);
   const results = await Promise.allSettled(
     providers.map((selectedProvider) =>
-      createProviderSearchRequest(
+      searchProviderPages(
         selectedProvider,
         trimmedQuery,
         safePage,
@@ -821,8 +884,8 @@ async function searchProviders(
     const settled = await settleProviderSearchResult(providerName, result, {
       fastMultiProviderMode,
       trimmedQuery,
-      safePage,
-      safePageSize: providerPageSize,
+      requestedPage: safePage,
+      providerPageSize,
       settings,
       signal
     });
@@ -882,7 +945,14 @@ async function* searchProvidersStream(
   const completedProviders = [];
   const pendingProviders = [...providers];
   const pendingSearches = providers.map((providerName) =>
-    createProviderSearchRequest(providerName, trimmedQuery, safePage, providerPageSize, settings, signal).then(
+    searchProviderPages(
+      providerName,
+      trimmedQuery,
+      safePage,
+      providerPageSize,
+      settings,
+      signal
+    ).then(
       (value) => ({
         providerName,
         result: {
@@ -915,8 +985,8 @@ async function* searchProvidersStream(
     const settled = await settleProviderSearchResult(providerName, result, {
       fastMultiProviderMode,
       trimmedQuery,
-      safePage,
-      safePageSize: providerPageSize,
+      requestedPage: safePage,
+      providerPageSize,
       settings,
       signal
     });

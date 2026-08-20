@@ -306,6 +306,72 @@ function mergeRemoteIdentity(preferred, alternate) {
   };
 }
 
+function createRankedRemoteEntry(item, score) {
+  const fingerprintKey = createTrackFingerprintKey(item);
+  return {
+    item,
+    score,
+    strongKeys: new Set(createStrongTrackIdentityKeys(item)),
+    fingerprintKeys: new Set(fingerprintKey ? [fingerprintKey] : [])
+  };
+}
+
+function rebuildRemoteIdentityIndexes(rankedItems, strongIdentityIndexes, fingerprintIndexes) {
+  strongIdentityIndexes.clear();
+  fingerprintIndexes.clear();
+
+  rankedItems.forEach((entry, index) => {
+    if (!entry) {
+      return;
+    }
+
+    for (const key of entry.strongKeys) {
+      strongIdentityIndexes.set(key, index);
+    }
+
+    for (const fingerprintKey of entry.fingerprintKeys) {
+      const indexes = fingerprintIndexes.get(fingerprintKey) || [];
+      indexes.push(index);
+      fingerprintIndexes.set(fingerprintKey, indexes);
+    }
+  });
+}
+
+function mergeRemoteIdentityClusters(rankedItems, matchingIndexes, item, itemScore) {
+  const survivorIndex = Math.min(...matchingIndexes);
+  const candidates = [
+    ...matchingIndexes
+      .map((index) => rankedItems[index])
+      .filter(Boolean),
+    createRankedRemoteEntry(item, itemScore)
+  ].sort((left, right) => right.score - left.score);
+
+  let mergedItem = candidates[0].item;
+  const strongKeys = new Set();
+  const fingerprintKeys = new Set();
+  for (const candidate of candidates) {
+    for (const key of candidate.strongKeys) {
+      strongKeys.add(key);
+    }
+    for (const key of candidate.fingerprintKeys) {
+      fingerprintKeys.add(key);
+    }
+  }
+  for (const alternate of candidates.slice(1)) {
+    mergedItem = mergeRemoteIdentity(mergedItem, alternate.item);
+  }
+
+  for (const index of matchingIndexes) {
+    rankedItems[index] = null;
+  }
+  rankedItems[survivorIndex] = {
+    item: mergedItem,
+    score: candidates[0].score,
+    strongKeys,
+    fingerprintKeys
+  };
+}
+
 function dedupeAndRankRemoteItems(items, query, limit = Number.POSITIVE_INFINITY) {
   const rankedItems = [];
   const strongIdentityIndexes = new Map();
@@ -319,56 +385,77 @@ function dedupeAndRankRemoteItems(items, query, limit = Number.POSITIVE_INFINITY
     const itemScore = scoreRemoteTrack(item, query);
     const strongKeys = createStrongTrackIdentityKeys(item);
     const fingerprintKey = createTrackFingerprintKey(item);
-    let duplicateIndex = -1;
+    const matchingIndexes = new Set();
 
     for (const key of strongKeys) {
-      if (strongIdentityIndexes.has(key)) {
-        duplicateIndex = strongIdentityIndexes.get(key);
-        break;
+      const index = strongIdentityIndexes.get(key);
+      if (Number.isInteger(index) && rankedItems[index]) {
+        matchingIndexes.add(index);
       }
     }
 
-    if (duplicateIndex < 0 && fingerprintKey) {
+    if (fingerprintKey) {
       for (const candidateIndex of fingerprintIndexes.get(fingerprintKey) || []) {
-        if (isTrackEquivalent(rankedItems[candidateIndex].item, item)) {
-          duplicateIndex = candidateIndex;
-          break;
+        const candidate = rankedItems[candidateIndex];
+        if (candidate && isTrackEquivalent(candidate.item, item)) {
+          matchingIndexes.add(candidateIndex);
         }
       }
     }
 
-    if (duplicateIndex < 0) {
-      duplicateIndex = rankedItems.length;
-      rankedItems.push({ item, score: itemScore });
-      if (fingerprintKey) {
-        const indexes = fingerprintIndexes.get(fingerprintKey) || [];
-        indexes.push(duplicateIndex);
-        fingerprintIndexes.set(fingerprintKey, indexes);
-      }
+    if (!matchingIndexes.size) {
+      rankedItems.push(createRankedRemoteEntry(item, itemScore));
     } else {
-      const existing = rankedItems[duplicateIndex];
-      if (itemScore > existing.score) {
-        existing.item = mergeRemoteIdentity(item, existing.item);
-        existing.score = itemScore;
-      } else {
-        existing.item = mergeRemoteIdentity(existing.item, item);
-      }
+      mergeRemoteIdentityClusters(rankedItems, [...matchingIndexes], item, itemScore);
     }
 
-    for (const key of strongKeys) {
-      strongIdentityIndexes.set(key, duplicateIndex);
-    }
+    rebuildRemoteIdentityIndexes(rankedItems, strongIdentityIndexes, fingerprintIndexes);
   }
 
-  return rankedItems
+  const sorted = rankedItems
+    .filter(Boolean)
     .sort((left, right) => {
       if (right.score !== left.score) {
         return right.score - left.score;
       }
       return String(left.item.title || '').localeCompare(String(right.item.title || ''));
-    })
-    .slice(0, Math.max(0, Number(limit) || 0))
-    .map((entry) => entry.item);
+    });
+  const numericLimit = Number(limit);
+  const limited = Number.isFinite(numericLimit)
+    ? sorted.slice(0, Math.max(0, numericLimit))
+    : sorted;
+
+  return limited.map((entry) => entry.item);
+}
+
+function paginateRankedRemoteItems(items, query, page = 1, pageSize = 8) {
+  const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
+  const requestedPage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const rankedItems = dedupeAndRankRemoteItems(items, query);
+  const total = rankedItems.length;
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const currentPage = Math.min(requestedPage, totalPages);
+  const start = (currentPage - 1) * safePageSize;
+
+  return {
+    items: rankedItems.slice(start, start + safePageSize),
+    total,
+    page: currentPage,
+    pageSize: safePageSize,
+    totalPages
+  };
+}
+
+function getProviderRequestPageSize(pageSize, providerCount, page = 1) {
+  const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
+  const safeProviderCount = Math.max(1, Number.parseInt(providerCount, 10) || 1);
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+
+  if (safeProviderCount === 1 || safePage > 1) {
+    return safePageSize;
+  }
+
+  return Math.min(10, Math.max(4, Math.ceil(safePageSize / safeProviderCount) + 2));
 }
 
 function getProviderRequestPageSize(pageSize, providerCount, page = 1) {
@@ -392,5 +479,6 @@ module.exports = {
   isPreferredMusicResult,
   scoreRemoteTrack,
   dedupeAndRankRemoteItems,
+  paginateRankedRemoteItems,
   getProviderRequestPageSize
 };
