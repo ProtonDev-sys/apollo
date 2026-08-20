@@ -54,7 +54,7 @@ jobs:
           )
           path.write_text(source, encoding='utf-8')
           PY
-          git rm --ignore-unmatch \
+          git rm -f --ignore-unmatch \
             .github/workflows/apply-search-optimization.yml \
             scripts/apply-search-optimization.py \
             scripts/prepare-search-patch.py
