@@ -6,10 +6,12 @@ const {
   dedupeAndRankRemoteItems,
   getProviderRequestPageSize,
   isPreferredMusicResult,
+  paginateRankedRemoteItems,
   rankTrackSearchDocuments,
   scoreTrackSearchDocument,
   tokenizeSearchQuery
 } = require('../app/search-ranking');
+const { normaliseComparableUrl } = require('../app/track-identity');
 
 function track(overrides = {}) {
   return {
@@ -114,6 +116,74 @@ test('remote result ranking deduplicates identities and preserves useful provide
   assert.equal(ranked[0].providerIds.spotify, 'sp-1');
   assert.equal(ranked[0].providerIds.youtube, 'yt-1');
   assert.equal(ranked[1].id, 'reaction');
+});
+
+test('bridge identities merge every previously separate matching cluster', () => {
+  const ranked = dedupeAndRankRemoteItems([
+    track({
+      id: 'spotify-only',
+      provider: 'spotify',
+      title: 'Bridge Song',
+      artist: 'Artist',
+      album: 'Album A',
+      providerIds: { spotify: 'sp-bridge' },
+      metadataSource: 'spotify'
+    }),
+    track({
+      id: 'youtube-only',
+      provider: 'youtube',
+      title: 'Bridge Song',
+      artist: 'Artist',
+      album: 'Album B',
+      providerIds: { youtube: 'yt-bridge' }
+    }),
+    track({
+      id: 'bridge',
+      provider: 'deezer',
+      title: 'Bridge Song',
+      artist: 'Artist',
+      album: 'Album A',
+      providerIds: {
+        spotify: 'sp-bridge',
+        youtube: 'yt-bridge',
+        deezer: 'dz-bridge'
+      }
+    })
+  ], 'bridge song artist');
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].providerIds.spotify, 'sp-bridge');
+  assert.equal(ranked[0].providerIds.youtube, 'yt-bridge');
+  assert.equal(ranked[0].providerIds.deezer, 'dz-bridge');
+});
+
+test('remote pagination is applied after global ranking and deduplication', () => {
+  const pagination = paginateRankedRemoteItems([
+    track({ id: 'one', title: 'Song One', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '1' } }),
+    track({ id: 'two', title: 'Song Two', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '2' } }),
+    track({ id: 'three', title: 'Song Three', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '3' } }),
+    track({ id: 'four', title: 'Song Four', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '4' } }),
+    track({ id: 'five', title: 'Song Five', artist: 'Artist', provider: 'spotify', providerIds: { spotify: '5' } })
+  ], 'song artist', 2, 2);
+
+  assert.equal(pagination.page, 2);
+  assert.equal(pagination.pageSize, 2);
+  assert.equal(pagination.total, 5);
+  assert.equal(pagination.totalPages, 3);
+  assert.equal(pagination.items.length, 2);
+  assert.deepEqual(
+    new Set(pagination.items.map((item) => item.id)),
+    new Set(['four', 'one'])
+  );
+});
+
+test('URL identities preserve case-sensitive paths and query values', () => {
+  const upper = normaliseComparableUrl('https://EXAMPLE.test/media/AbC?token=XyZ&utm_source=test');
+  const lower = normaliseComparableUrl('https://example.test/media/aBc?token=xyz');
+
+  assert.equal(upper, 'https://example.test/media/AbC?token=XyZ');
+  assert.equal(lower, 'https://example.test/media/aBc?token=xyz');
+  assert.notEqual(upper, lower);
 });
 
 test('YouTube song filtering rejects commentary and alternate versions unless requested', () => {
