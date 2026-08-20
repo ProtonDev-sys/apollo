@@ -1,7 +1,12 @@
 const { randomUUID } = require('crypto');
 const { INSTALLABLE_DEPENDENCIES, resolveExecutablePath, runProcess } = require('./binaries');
 const { createHttpError, isAbortError } = require('./http-error');
-const { isTrackEquivalent } = require('./data-store');
+const {
+  dedupeAndRankRemoteItems,
+  getProviderRequestPageSize,
+  isPreferredMusicResult,
+  scoreRawProviderEntry
+} = require('./search-ranking');
 const { searchDeezerTracks, searchItunesTracks } = require('./public-metadata-service');
 const { createEmptyProviderIds, formatApiTrack } = require('./models');
 const {
@@ -13,10 +18,6 @@ const {
 } = require('./metadata-normalizer');
 
 const SEARCH_PROVIDER_ORDER = ['spotify', 'youtube', 'soundcloud', 'itunes', 'deezer'];
-const NON_SONG_VIDEO_PATTERN =
-  /\b(lyrics?|official video|video clip|reaction|karaoke|cover|live|sped up|slowed|nightcore|fanmade|fan-made)\b/i;
-const YOUTUBE_AUDIO_HINT_PATTERN = /\b(official audio|audio|topic)\b/i;
-const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
 const SPOTIFY_TOKEN_EXPIRY_SKEW_MS = 30 * 1000;
 const spotifyTokenCache = new Map();
 const spotifyTokenInflight = new Map();
@@ -432,7 +433,7 @@ async function searchMetadataCandidates(seed, settings, signal) {
     }
   }
 
-  return dedupeRemoteItems(results);
+  return dedupeAndRankRemoteItems(results, searchText);
 }
 
 async function enrichTrackMetadata(seed, settings, { signal, force = false } = {}) {
@@ -615,124 +616,6 @@ function extractResolvedMetadata(entry, fallbackProvider = 'link') {
   };
 }
 
-function scoreSearchEntry(entry, provider, query) {
-  const title = String(entry.track || entry.title || '').toLowerCase();
-  const artist = String(entry.artist || entry.uploader || entry.channel || '').toLowerCase();
-  const queryTerms = String(query || '')
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((term) => term.length >= 3);
-
-  let score = 0;
-
-  for (const term of queryTerms) {
-    if (title.includes(term)) {
-      score += 4;
-    }
-    if (artist.includes(term)) {
-      score += 3;
-    }
-  }
-
-  if (provider === 'youtube') {
-    if (YOUTUBE_AUDIO_HINT_PATTERN.test(title) || YOUTUBE_AUDIO_HINT_PATTERN.test(artist)) {
-      score += 30;
-    }
-
-    if (NON_SONG_VIDEO_PATTERN.test(title)) {
-      score -= 40;
-    }
-  }
-
-  if (provider === 'soundcloud' && NON_SONG_VIDEO_PATTERN.test(title)) {
-    score -= 20;
-  }
-
-  if (entry.duration && entry.duration >= 90 && entry.duration <= 600) {
-    score += 10;
-  }
-
-  return score;
-}
-
-function isPreferredMusicResult(entry, provider, query) {
-  if (provider !== 'youtube') {
-    return true;
-  }
-
-  const queryText = String(query || '').toLowerCase();
-  if (/\b(video|lyrics|karaoke|cover|live|remix)\b/.test(queryText)) {
-    return true;
-  }
-
-  const title = String(entry.track || entry.title || '').toLowerCase();
-  if (entry.duration && entry.duration < 90) {
-    return false;
-  }
-
-  return !NON_SONG_VIDEO_PATTERN.test(title);
-}
-
-function scoreRemoteResult(item) {
-  let score = 0;
-
-  if (item.provider === 'spotify') {
-    score += 50;
-  } else if (item.provider === 'deezer') {
-    score += 40;
-  } else if (item.provider === 'itunes') {
-    score += 35;
-  } else if (item.provider === 'youtube') {
-    score += 20;
-  } else if (item.provider === 'soundcloud') {
-    score += 10;
-  }
-
-  if (item.requestedProvider) {
-    score -= 20;
-  }
-
-  if (item.metadataSource === 'spotify' || item.metadataSource === 'spotify-page') {
-    score += 25;
-  } else if (item.metadataSource === 'deezer') {
-    score += 18;
-  } else if (item.metadataSource === 'itunes') {
-    score += 15;
-  }
-
-  if (item.artwork) {
-    score += 5;
-  }
-
-  if (item.duration) {
-    score += 3;
-  }
-
-  if (!GENERIC_ALBUM_NAMES.has(String(item.album || '').trim().toLowerCase())) {
-    score += 2;
-  }
-
-  return score;
-}
-
-function dedupeRemoteItems(items) {
-  const dedupedItems = [];
-
-  for (const item of items) {
-    const duplicateIndex = dedupedItems.findIndex((existingItem) => isTrackEquivalent(existingItem, item));
-    if (duplicateIndex < 0) {
-      dedupedItems.push(item);
-      continue;
-    }
-
-    if (scoreRemoteResult(item) > scoreRemoteResult(dedupedItems[duplicateIndex])) {
-      dedupedItems[duplicateIndex] = item;
-    }
-  }
-
-  return dedupedItems;
-}
-
 async function searchViaYtDlp(query, provider, page, pageSize, settings, signal) {
   const ytDlpPath = await resolveExecutablePath(
     settings.ytDlpPath,
@@ -750,7 +633,7 @@ async function searchViaYtDlp(query, provider, page, pageSize, settings, signal)
   const rankedEntries = (payload.entries || [])
     .map((entry) => ({
       ...entry,
-      __score: scoreSearchEntry(entry, provider, query)
+      __score: scoreRawProviderEntry(entry, provider, query)
     }))
     .sort((left, right) => right.__score - left.__score);
   const preferredEntries = rankedEntries.filter((entry) =>
@@ -783,16 +666,16 @@ async function searchSpotifyFallback(query, page, pageSize, settings, signal) {
 }
 
 function createRemoteSearchResponse(
-  { items, warnings, providerErrors, providers, page, pageSize },
+  { items, warnings, providerErrors, providers, page, pageSize, query },
   progress = null
 ) {
-  const dedupedItems = dedupeRemoteItems(items);
+  const rankedItems = dedupeAndRankRemoteItems(items, query, pageSize);
   const payload = {
-    items: dedupedItems,
-    total: dedupedItems.length,
+    items: rankedItems,
+    total: rankedItems.length,
     page,
     pageSize,
-    totalPages: Math.max(1, Math.ceil(dedupedItems.length / pageSize)),
+    totalPages: Math.max(1, Math.ceil(rankedItems.length / pageSize)),
     provider: providers,
     providerErrors,
     warning: warnings.join(' ')
@@ -915,13 +798,14 @@ async function searchProviders(
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const providers = parseProviderSelection(provider);
   const fastMultiProviderMode = providers.length > 1;
+  const providerPageSize = getProviderRequestPageSize(safePageSize, providers.length, safePage);
   const results = await Promise.allSettled(
     providers.map((selectedProvider) =>
       createProviderSearchRequest(
         selectedProvider,
         trimmedQuery,
         safePage,
-        safePageSize,
+        providerPageSize,
         settings,
         signal
       )
@@ -938,7 +822,7 @@ async function searchProviders(
       fastMultiProviderMode,
       trimmedQuery,
       safePage,
-      safePageSize,
+      safePageSize: providerPageSize,
       settings,
       signal
     });
@@ -953,7 +837,8 @@ async function searchProviders(
     providerErrors,
     providers,
     page: safePage,
-    pageSize: safePageSize
+    pageSize: safePageSize,
+    query: trimmedQuery
   });
 }
 
@@ -967,6 +852,7 @@ async function* searchProvidersStream(
   const safePageSize = Math.min(20, Math.max(1, Number.parseInt(pageSize, 10) || 8));
   const providers = parseProviderSelection(provider);
   const fastMultiProviderMode = providers.length > 1;
+  const providerPageSize = getProviderRequestPageSize(safePageSize, providers.length, safePage);
 
   if (!trimmedQuery) {
     yield createRemoteSearchResponse(
@@ -976,7 +862,8 @@ async function* searchProvidersStream(
         providerErrors: {},
         providers,
         page: 1,
-        pageSize: safePageSize
+        pageSize: safePageSize,
+        query: trimmedQuery
       },
       {
         complete: true,
@@ -995,7 +882,7 @@ async function* searchProvidersStream(
   const completedProviders = [];
   const pendingProviders = [...providers];
   const pendingSearches = providers.map((providerName) =>
-    createProviderSearchRequest(providerName, trimmedQuery, safePage, safePageSize, settings, signal).then(
+    createProviderSearchRequest(providerName, trimmedQuery, safePage, providerPageSize, settings, signal).then(
       (value) => ({
         providerName,
         result: {
@@ -1029,7 +916,7 @@ async function* searchProvidersStream(
       fastMultiProviderMode,
       trimmedQuery,
       safePage,
-      safePageSize,
+      safePageSize: providerPageSize,
       settings,
       signal
     });
@@ -1049,7 +936,8 @@ async function* searchProvidersStream(
         providerErrors,
         providers,
         page: safePage,
-        pageSize: safePageSize
+        pageSize: safePageSize,
+        query: trimmedQuery
       },
       {
         complete: pendingProviders.length === 0,
