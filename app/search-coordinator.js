@@ -1,13 +1,33 @@
 const { createAbortError } = require('./http-error');
+const { normaliseComparableText } = require('./track-identity');
 
 function cloneSearchResult(value) {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+
   return JSON.parse(JSON.stringify(value));
 }
 
+function normaliseProviderSelection(value) {
+  const providers = Array.isArray(value) ? value : String(value || 'all').split(',');
+  const normalised = [...new Set(
+    providers
+      .map((provider) => String(provider || '').trim().toLowerCase())
+      .filter(Boolean)
+  )];
+
+  if (!normalised.length || normalised.includes('all')) {
+    return ['all'];
+  }
+
+  return normalised.sort();
+}
+
 class SearchCoordinator {
-  constructor({ cacheTtlMs = 15000, maxCacheEntries = 100 } = {}) {
-    this.cacheTtlMs = cacheTtlMs;
-    this.maxCacheEntries = maxCacheEntries;
+  constructor({ cacheTtlMs = 30000, maxCacheEntries = 200 } = {}) {
+    this.cacheTtlMs = Math.max(0, Number(cacheTtlMs) || 0);
+    this.maxCacheEntries = Math.max(1, Number(maxCacheEntries) || 1);
     this.activeSearches = new Map();
     this.cache = new Map();
   }
@@ -28,13 +48,13 @@ class SearchCoordinator {
     return `ip:${request.socket.remoteAddress || 'anonymous'}`;
   }
 
-  createCacheKey(payload) {
+  createCacheKey(payload = {}) {
     return JSON.stringify({
-      query: String(payload.query || '').trim(),
-      provider: Array.isArray(payload.provider) ? payload.provider : String(payload.provider || 'all'),
-      scope: String(payload.scope || 'all'),
-      page: String(payload.page || '1'),
-      pageSize: String(payload.pageSize || '20')
+      query: normaliseComparableText(payload.query),
+      provider: normaliseProviderSelection(payload.provider),
+      scope: String(payload.scope || 'all').trim().toLowerCase(),
+      page: Math.max(1, Number.parseInt(payload.page, 10) || 1),
+      pageSize: Math.max(1, Number.parseInt(payload.pageSize, 10) || 20)
     });
   }
 
@@ -49,23 +69,26 @@ class SearchCoordinator {
       return null;
     }
 
+    this.cache.delete(cacheKey);
+    this.cache.set(cacheKey, cached);
     return cloneSearchResult(cached.payload);
   }
 
   setCached(cacheKey, payload) {
     this.pruneExpiredCache();
+    this.cache.delete(cacheKey);
     this.cache.set(cacheKey, {
       payload: cloneSearchResult(payload),
       expiresAt: Date.now() + this.cacheTtlMs
     });
 
     while (this.cache.size > this.maxCacheEntries) {
-      const oldestKey = this.cache.keys().next().value;
-      if (!oldestKey) {
+      const leastRecentlyUsedKey = this.cache.keys().next().value;
+      if (!leastRecentlyUsedKey) {
         break;
       }
 
-      this.cache.delete(oldestKey);
+      this.cache.delete(leastRecentlyUsedKey);
     }
   }
 
@@ -96,7 +119,9 @@ class SearchCoordinator {
     }
 
     const controller = new AbortController();
-    const signal = requestSignal ? AbortSignal.any([controller.signal, requestSignal]) : controller.signal;
+    const signal = requestSignal
+      ? AbortSignal.any([controller.signal, requestSignal])
+      : controller.signal;
     const entry = {
       clientKey,
       cacheKey,
@@ -154,5 +179,7 @@ class SearchCoordinator {
 }
 
 module.exports = {
-  SearchCoordinator
+  SearchCoordinator,
+  cloneSearchResult,
+  normaliseProviderSelection
 };
