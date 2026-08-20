@@ -20,7 +20,9 @@
     "release:linux": "electron-builder --linux AppImage deb --publish always",
     "linux:service:install": "node scripts/install-linux-service.js install",
     "linux:service:remove": "node scripts/install-linux-service.js remove",
+    "check:runtime": "node scripts/check-electron-runtime.js",
     "test": "node --test",
+    "verify": "npm run check:runtime && npm test",
     "config:path": "node cli.js config-path",
     "config:print": "node cli.js print-config"
   },
