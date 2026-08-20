@@ -507,7 +507,10 @@ function isPublicRoute(request, pathname) {
 
 function createMusicServer(services) {
   let server = null;
-  const searchCoordinator = new SearchCoordinator();
+  const searchCoordinator = new SearchCoordinator({
+    cacheTtlMs: 30000,
+    maxCacheEntries: 200
+  });
   const requestCoordinator = new RequestCoordinator({
     cacheTtlMs: 10000,
     maxCacheEntries: 200

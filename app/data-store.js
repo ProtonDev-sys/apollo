@@ -3,6 +3,8 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createHttpError } = require('./http-error');
 const { normaliseProviderIds } = require('./models');
+const { isTrackEquivalent } = require('./track-identity');
+const { createTrackSearchDocument, rankTrackSearchDocuments } = require('./search-ranking');
 const {
   createSharedSecretRecord,
   normaliseSessionTtlHours
@@ -28,99 +30,12 @@ function createDefaultSettings(musicRoot) {
   };
 }
 
-const GENERIC_ALBUM_NAMES = new Set(['', 'singles', 'youtube', 'soundcloud', 'spotify', 'deezer']);
 const EXPLICITLY_CLEARABLE_STRING_SETTINGS = new Set([
   'ytDlpPath',
   'ffmpegPath',
   'spotifyClientId',
   'spotifyClientSecret'
 ]);
-
-function normaliseComparableText(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
-
-function normaliseComparableUrl(value) {
-  return String(value || '')
-    .trim()
-    .replace(/\/+$/g, '')
-    .toLowerCase();
-}
-
-function hasSameProviderIdentity(leftProviderIds = {}, rightProviderIds = {}) {
-  const leftIds = normaliseProviderIds(leftProviderIds);
-  const rightIds = normaliseProviderIds(rightProviderIds);
-
-  if (leftIds.isrc && rightIds.isrc && leftIds.isrc === rightIds.isrc) {
-    return true;
-  }
-
-  return ['spotify', 'youtube', 'soundcloud', 'itunes', 'deezer'].some((key) => {
-    return leftIds[key] && rightIds[key] && leftIds[key] === rightIds[key];
-  });
-}
-
-function hasCompatibleDuration(leftDuration, rightDuration) {
-  if (!leftDuration || !rightDuration) {
-    return true;
-  }
-
-  return Math.abs(Number(leftDuration) - Number(rightDuration)) <= 5;
-}
-
-function hasSameMetadataFingerprint(left, right) {
-  const leftTitle = normaliseComparableText(left.title);
-  const rightTitle = normaliseComparableText(right.title);
-  const leftArtist = normaliseComparableText(left.artist);
-  const rightArtist = normaliseComparableText(right.artist);
-
-  if (!leftTitle || !rightTitle || !leftArtist || !rightArtist) {
-    return false;
-  }
-
-  if (leftTitle !== rightTitle || leftArtist !== rightArtist) {
-    return false;
-  }
-
-  if (!hasCompatibleDuration(left.duration, right.duration)) {
-    return false;
-  }
-
-  const leftAlbum = normaliseComparableText(left.album);
-  const rightAlbum = normaliseComparableText(right.album);
-  if (
-    leftAlbum &&
-    rightAlbum &&
-    !GENERIC_ALBUM_NAMES.has(leftAlbum) &&
-    !GENERIC_ALBUM_NAMES.has(rightAlbum) &&
-    leftAlbum !== rightAlbum
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
-function isTrackEquivalent(left, right) {
-  if (!left || !right) {
-    return false;
-  }
-
-  if (hasSameProviderIdentity(left.providerIds, right.providerIds)) {
-    return true;
-  }
-
-  const leftSourceUrl = normaliseComparableUrl(left.sourceUrl || left.externalUrl || left.downloadTarget);
-  const rightSourceUrl = normaliseComparableUrl(right.sourceUrl || right.externalUrl || right.downloadTarget);
-  if (leftSourceUrl && rightSourceUrl && leftSourceUrl === rightSourceUrl) {
-    return true;
-  }
-
-  return hasSameMetadataFingerprint(left, right);
-}
 
 function normaliseStoredTrack(track = {}, existingTrack = null) {
   const mergedMetadata = mergeTrackMetadata(existingTrack || {}, track || {});
@@ -158,8 +73,8 @@ function normaliseStoredTrack(track = {}, existingTrack = null) {
     metadataSource: track.metadataSource || existingTrack?.metadataSource || mergedMetadata.metadataSource || 'library',
     filePath,
     fileName: track.fileName || existingTrack?.fileName || (filePath ? path.basename(filePath) : ''),
-    addedAt: existingTrack ? existingTrack.addedAt : new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    addedAt: track.addedAt || existingTrack?.addedAt || new Date().toISOString(),
+    updatedAt: track.updatedAt || new Date().toISOString()
   };
 }
 
@@ -221,6 +136,7 @@ class DataStore {
     this.defaultSettings = defaultSettings;
     this.state = null;
     this.writeQueue = Promise.resolve();
+    this.trackSearchDocuments = new Map();
   }
 
   async init() {
@@ -233,6 +149,8 @@ class DataStore {
     } catch (error) {
       this.state = this.normaliseState({});
     }
+
+    this.rebuildTrackSearchIndex();
 
     await this.loadSettings();
     await this.mergeLegacySettings();
@@ -425,6 +343,25 @@ class DataStore {
     return this.writeQueue;
   }
 
+  rebuildTrackSearchIndex() {
+    this.trackSearchDocuments.clear();
+    for (const track of this.state?.tracks || []) {
+      this.indexTrack(track);
+    }
+  }
+
+  indexTrack(track) {
+    if (!track?.id) {
+      return;
+    }
+
+    this.trackSearchDocuments.set(track.id, createTrackSearchDocument(track));
+  }
+
+  removeTrackFromSearchIndex(trackId) {
+    this.trackSearchDocuments.delete(trackId);
+  }
+
   getOverview() {
     const completedDownloads = this.state.downloads.filter(
       (item) => item.status === 'completed'
@@ -441,30 +378,20 @@ class DataStore {
   listTracks({ query = '', page = 1, pageSize = 12 } = {}) {
     const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
     const safePageSize = Math.min(10000, Math.max(1, Number.parseInt(pageSize, 10) || 12));
-    const term = query.trim().toLowerCase();
+    const term = String(query || '').trim();
+    const tracks = term
+      ? rankTrackSearchDocuments([...this.trackSearchDocuments.values()], term)
+      : [...this.state.tracks].sort((left, right) => {
+          return new Date(right.addedAt || 0).getTime() - new Date(left.addedAt || 0).getTime();
+        });
 
-    const filtered = this.state.tracks
-      .filter((track) => {
-        if (!term) {
-          return true;
-        }
-
-        return [track.title, track.artist, track.album, track.genre, track.filePath]
-          .concat(Array.isArray(track.artists) ? track.artists : [])
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(term));
-      })
-      .sort((left, right) => {
-        return new Date(right.addedAt || 0).getTime() - new Date(left.addedAt || 0).getTime();
-      });
-
-    const total = filtered.length;
+    const total = tracks.length;
     const totalPages = Math.max(1, Math.ceil(total / safePageSize));
     const currentPage = Math.min(safePage, totalPages);
     const start = (currentPage - 1) * safePageSize;
 
     return {
-      items: filtered.slice(start, start + safePageSize),
+      items: tracks.slice(start, start + safePageSize),
       total,
       page: currentPage,
       pageSize: safePageSize,
@@ -523,6 +450,7 @@ class DataStore {
       this.state.tracks.push(nextTrack);
     }
 
+    this.indexTrack(nextTrack);
     this.attachTrackToPlaylists(nextTrack);
     return nextTrack;
   }
@@ -577,6 +505,7 @@ class DataStore {
     }
 
     const [removedTrack] = this.state.tracks.splice(index, 1);
+    this.removeTrackFromSearchIndex(trackId);
     this.clearTrackFromPlaylistEntries(trackId);
     await this.persist();
 
@@ -596,6 +525,7 @@ class DataStore {
     this.state.tracks = this.state.tracks.filter((track) =>
       pathSet.has((track.filePath || '').toLowerCase())
     );
+    this.rebuildTrackSearchIndex();
 
     for (const trackId of removedTrackIds) {
       this.clearTrackFromPlaylistEntries(trackId);
