@@ -44,9 +44,9 @@ function normaliseComparableUrl(value) {
     url.hostname = url.hostname.toLowerCase();
     url.pathname = url.pathname.replace(/\/+$/g, '') || '/';
     url.searchParams.sort();
-    return url.toString().replace(/\/$/, '').toLowerCase();
+    return url.toString().replace(/\/$/, '');
   } catch {
-    return rawValue.replace(/\/+$/g, '').toLowerCase();
+    return rawValue.replace(/\/+$/g, '');
   }
 }
 
