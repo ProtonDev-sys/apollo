@@ -37,28 +37,12 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Validate permanent search files
         run: npm run verify
-      - name: Commit validated permanent files
+      - name: Commit validated application files
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main --depth=1
-          git checkout origin/main -- .github/workflows/ci.yml
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('.github/workflows/ci.yml')
-          source = path.read_text(encoding='utf-8')
-          source = source.replace(
-              '      - name: Install dependencies\n        run: npm ci --ignore-scripts\n      - name: Run tests\n',
-              '      - name: Install dependencies\n        run: npm ci --ignore-scripts\n      - name: Verify Electron runtime boundary\n        run: npm run check:runtime\n      - name: Run tests\n'
-          )
-          path.write_text(source, encoding='utf-8')
-          PY
-          git rm -f --ignore-unmatch \
-            .github/workflows/apply-search-optimization.yml \
-            scripts/apply-search-optimization.py \
-            scripts/prepare-search-patch.py
-          git add .github/workflows/ci.yml app/data-store.js app/search-service.js app/music-server.js
+          git add app/data-store.js app/search-service.js app/music-server.js
           git commit -m "Index and relevance-rank song search"
           git push origin HEAD:codex/song-search-optimization-20260820
 
