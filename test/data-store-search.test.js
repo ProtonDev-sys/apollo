@@ -91,26 +91,26 @@ test('library search is accent-insensitive and supports short tokens', async () 
   }
 });
 
-test('library search index updates on upsert and delete', async () => {
+test('library search index updates when stronger metadata replaces generic metadata', async () => {
   const { baseDir, store } = await createStore();
 
   try {
     await store.upsertTrack({
       id: 'track',
-      title: 'Old Name',
-      artist: 'Artist',
+      title: 'Unknown Title',
+      artist: 'Unknown Artist',
       filePath: path.join(baseDir, 'track.mp3')
     });
-    assert.equal(store.listTracks({ query: 'old name' }).total, 1);
+    assert.equal(store.listTracks({ query: 'unknown title' }).total, 1);
 
     await store.upsertTrack({
       id: 'track',
       title: 'New Name',
-      artist: 'Artist',
+      artist: 'Real Artist',
       filePath: path.join(baseDir, 'track.mp3')
     });
-    assert.equal(store.listTracks({ query: 'old name' }).total, 0);
-    assert.equal(store.listTracks({ query: 'new name' }).total, 1);
+    assert.equal(store.listTracks({ query: 'unknown title' }).total, 0);
+    assert.equal(store.listTracks({ query: 'real artist new name' }).total, 1);
 
     await store.deleteTrack('track');
     assert.equal(store.listTracks({ query: 'new name' }).total, 0);
